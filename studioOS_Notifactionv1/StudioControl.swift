@@ -565,6 +565,7 @@ struct StudioControlView: View {
     @ObservedObject var watchdog: WatchdogStatusMonitor
     @ObservedObject var folders: RecordingFolderAccessStore
     @ObservedObject var evidence: RecordingEvidenceStore
+    let showInstallation: () -> Void
     // Ten hours is the normal starting value, not automatic capacity proof.
     // The operator must still read the device/app and deliberately confirm it.
     @State private var rodecasterHours = "10"
@@ -578,6 +579,24 @@ struct StudioControlView: View {
                     Text("Studio Control").font(.largeTitle.bold())
                     Text("A guarded front panel for visible Companion Page 4 controls. It never calls hidden buttons, cameras, OBS, RØDECaster or archive routes directly.")
                         .foregroundStyle(.secondary)
+                }
+
+                if folders.folders.isEmpty {
+                    GroupBox {
+                        HStack(alignment: .center, spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Finish setup first").font(.headline)
+                                Text("Choose the recording folders before the first take.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Open setup", action: showInstallation)
+                        }
+                        .padding(4)
+                    }
                 }
 
                 GroupBox("Control engine") {

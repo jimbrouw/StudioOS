@@ -180,30 +180,35 @@ struct ContentView: View {
     @StateObject private var studioControl = StudioControlMonitor()
     @StateObject private var recordingFolders = RecordingFolderAccessStore()
     @StateObject private var recordingEvidence = RecordingEvidenceStore()
-    @State private var selectedSection = "Installation"
+    @State private var selectedSection = "Studio Control"
+    @State private var setupExpanded = false
 
     var body: some View {
         NavigationSplitView {
             List(selection: $selectedSection) {
-                Section("CONTROL ROOM") {
-                    Label("Installation", systemImage: "shippingbox.and.arrow.backward")
-                        .tag("Installation")
+                Section("RECORDING") {
                     Label("Studio Control", systemImage: "switch.2")
                         .tag("Studio Control")
-                    Label("FX30 Control Room", systemImage: "video.badge.ellipsis")
-                        .tag("FX30 Control Room")
                     Label("Recording Status", systemImage: "waveform.path.ecg.rectangle")
                         .tag("Recording Status")
                     Label("Recording Folders", systemImage: "folder.badge.gearshape")
                         .tag("Recording Folders")
+                }
+                Section("ALERTS") {
                     Label("Alert Desk", systemImage: "exclamationmark.bubble")
                         .tag("Alert Desk")
                     Label("Alert History", systemImage: "clock.arrow.circlepath")
                         .tag("Alert History")
                 }
-                Section("LOCAL DELIVERY") {
-                    Label("Notification Test", systemImage: "bell.badge")
-                        .tag("Notification Test")
+                Section {
+                    DisclosureGroup("SETUP", isExpanded: $setupExpanded) {
+                        Label("Installation", systemImage: "shippingbox.and.arrow.backward")
+                            .tag("Installation")
+                        Label("FX30 Control Room", systemImage: "video.badge.ellipsis")
+                            .tag("FX30 Control Room")
+                        Label("Notification Test", systemImage: "bell.badge")
+                            .tag("Notification Test")
+                    }
                 }
             }
             .navigationTitle("StudioOS")
@@ -212,7 +217,13 @@ struct ContentView: View {
             switch selectedSection {
             case "Installation": InstallationSetupView(folders: recordingFolders, notifications: notifications)
             case "FX30 Control Room": FX30ControlRoomView()
-            case "Studio Control": StudioControlView(monitor: studioControl, watchdog: watchdog, folders: recordingFolders, evidence: recordingEvidence)
+            case "Studio Control": StudioControlView(
+                monitor: studioControl,
+                watchdog: watchdog,
+                folders: recordingFolders,
+                evidence: recordingEvidence,
+                showInstallation: { selectedSection = "Installation" }
+            )
             case "Recording Status": WatchdogStatusView(monitor: watchdog, notifications: notifications)
             case "Recording Folders": RecordingFolderAccessView(store: recordingFolders, evidence: recordingEvidence)
             case "Alert History": AlertHistoryView(store: store)
