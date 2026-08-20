@@ -639,17 +639,6 @@ struct StudioControlView: View {
                         }
                         Text(monitor.rodecasterCapacity.projectedTime + " · " + monitor.rodecasterCapacity.requiredTime)
                             .font(.title3.weight(.semibold))
-                        Text(monitor.rodecasterCapacity.displayMessage)
-                            .foregroundStyle(.secondary)
-                        if let source = monitor.rodecasterCapacity.source, !source.isEmpty {
-                            Text("Last read from: " + source)
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-
-                        Divider()
-
-                        Text("Default: 10 hours. Read the remaining time on the RØDECaster screen or official app and adjust it if needed, then confirm it here. This saves your manual check as the V4 capacity gate. It does not send a recording, camera, OBS or RØDECaster command.")
-                            .font(.caption).foregroundStyle(.secondary)
                         HStack {
                             TextField("Hours remaining", text: $rodecasterHours)
                                 .frame(width: 145)
@@ -674,6 +663,17 @@ struct StudioControlView: View {
                         }
                         if let error = monitor.capacityConfirmationError {
                             Text(error).font(.caption.weight(.semibold)).foregroundStyle(.orange)
+                        }
+                        DisclosureGroup("Details") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(monitor.rodecasterCapacity.displayMessage)
+                                if let source = monitor.rodecasterCapacity.source, !source.isEmpty {
+                                    Text("Last read from: " + source)
+                                }
+                                Text("Read the remaining time on the RØDECaster screen or official app, then confirm it here. This saves a manual capacity check; it does not control recording, cameras, OBS or the RØDECaster.")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         }
                     }
                     .padding(4)
@@ -701,8 +701,9 @@ struct StudioControlView: View {
                     .padding(4)
                 }
 
-                GroupBox("No-camera test") {
+                DisclosureGroup("Advanced — test only") {
                     VStack(alignment: .leading, spacing: 10) {
+                        Text("No-camera test").font(.headline)
                         Text("Use this only when no FX30 is connected. First run `ARM: NO CAMERA` at 4/2/2. Then the guarded RECORD button below asks V4 to run the existing no-camera safety coordinator. StudioOS itself does not call hidden Companion routes or recorder controls.")
                             .font(.caption).foregroundStyle(.secondary)
                         ControlButton(control: .noCameraArm, monitor: monitor, watchdog: watchdog.status, tint: .orange) {
@@ -749,7 +750,7 @@ struct StudioControlView: View {
                             .buttonStyle(.borderless)
                         }
                     }
-                    .padding(4)
+                    .padding(.horizontal, 4)
                 }
 
                 GroupBox("Current state") {
