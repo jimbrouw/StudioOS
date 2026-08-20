@@ -62,9 +62,9 @@ enum RecordingFolderCheck: Equatable {
 
     var title: String {
         switch self {
-        case .notChosen: "Not chosen"
+        case .notChosen: "Not chosen yet"
         case .ready: "Access confirmed"
-        case .needsSelection: "Needs attention"
+        case .needsSelection: "Choose again"
         }
     }
 
@@ -290,14 +290,14 @@ struct RecordingFolderAccessView: View {
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Recording Folders").font(.largeTitle.bold())
-                    Text("Choose each recording folder once. StudioOS keeps read-only access so it can check future takes without Terminal or Full Disk Access changes.")
+                    Text("Point StudioOS at your five recording folders.")
                         .foregroundStyle(.secondary)
                 }
 
-                GroupBox("Before you start") {
-                    Text("This screen cannot start or stop recorders, change a destination, or inspect media contents. “Check access” only confirms that StudioOS can open and list the selected folders.")
+                DisclosureGroup("Details") {
+                    Text("StudioOS keeps read-only access so it can check future takes. It cannot start or stop recorders, change a destination or inspect media contents. Check access only confirms StudioOS can open and list the selected folders.")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .padding(4)
                 }
 
                 ForEach(RecordingFolderRole.allCases) { role in
@@ -307,7 +307,7 @@ struct RecordingFolderAccessView: View {
                 HStack {
                     Button("Check folder access", systemImage: "checkmark.shield") { store.checkAll() }
                         .buttonStyle(.borderedProminent)
-                    Text("All three must show Access confirmed before the future watchdog can use them.")
+                    Text("All five must show Access confirmed before StudioOS can use them.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 

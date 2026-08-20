@@ -28,9 +28,9 @@ enum StudioControlEngineState: Equatable {
 
     var title: String {
         switch self {
-        case .checking: "CHECKING CONTROL ENGINE"
-        case .available: "CONTROL ENGINE AVAILABLE"
-        case .unavailable: "CONTROL ENGINE OFFLINE"
+        case .checking: "Checking Studio page"
+        case .available: "Studio page ready"
+        case .unavailable: "Studio page unavailable"
         }
     }
 
@@ -45,11 +45,11 @@ enum StudioControlEngineState: Equatable {
     var detail: String {
         switch self {
         case .checking:
-            "StudioOS is checking the local Companion service. No control has been sent."
+            "Checking locally. No button was pressed."
         case .available:
-            "Companion answered a read-only local availability check."
+            "Local check passed."
         case .unavailable(let reason):
-            "Companion did not answer its local check: " + reason + ". RECORD and STOP are disabled."
+            "No local reply: " + reason + ". RECORD and STOP are disabled."
         }
     }
 }
@@ -68,9 +68,9 @@ enum LocalServiceState: Equatable {
 
     var label: String {
         switch self {
-        case .checking: "CHECKING"
-        case .available: "AVAILABLE"
-        case .unavailable: "OFFLINE"
+        case .checking: "Checking"
+        case .available: "Running"
+        case .unavailable: "Offline"
         }
     }
 
@@ -296,7 +296,7 @@ final class StudioControlMonitor: ObservableObject {
     func press(_ control: VisiblePage4Control, watchdog: WatchdogStatus) async {
         guard canPress(control, watchdog: watchdog) else {
             if control == .stop {
-                dispatchError = "Companion is unavailable, so StudioOS did not send STOP. Use the physical/shared Page 4 control if available."
+                dispatchError = "Companion is unavailable, so StudioOS did not send STOP. Use the physical Studio page control if available."
             } else if (control == .arm || control == .noCameraArm) && v4Recording {
                 dispatchError = control.title + " is disabled while V4 confirms a recording is active."
             } else if !rodecasterCapacity.gateOpen {
@@ -340,7 +340,7 @@ final class StudioControlMonitor: ObservableObject {
                 releaseConfirmed: true,
                 detail: control == .noCameraArm
                     ? "ARM: NO CAMERA was accepted by Companion. It is an ARM-only test and does not start recording or enable no-camera RECORD. Check its separate receipt for the real readiness result."
-                    : control.title + " press and release were accepted by Companion. This is control evidence, not recording or media proof."
+                    : control.title + " was accepted by Companion. This is not recording or media proof."
             )
             if control == .noCameraArm {
                 noCameraTestUntil = Date().addingTimeInterval(15 * 60)
@@ -350,7 +350,7 @@ final class StudioControlMonitor: ObservableObject {
                 control: control,
                 sentAt: Date(),
                 releaseConfirmed: false,
-                detail: control.title + " press was accepted, but Companion did not confirm release. Check the normal Page 4 state and the recorders."
+                detail: control.title + " was accepted, but Companion did not confirm release. Check the Studio page and recorders."
             )
             dispatchError = dispatch?.detail
         }
@@ -577,7 +577,12 @@ struct StudioControlView: View {
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Studio Control").font(.largeTitle.bold())
-                    Text("A guarded front panel for visible Companion Page 4 controls. It never calls hidden buttons, cameras, OBS, RØDECaster or archive routes directly.")
+                    Text("Start and stop the take.")
+                        .foregroundStyle(.secondary)
+                }
+                DisclosureGroup("Details") {
+                    Text("StudioOS uses only the visible Studio page buttons. It never calls hidden buttons, cameras, OBS, RØDECaster or archive routes directly. A button reply is not recording or media proof.")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
@@ -599,7 +604,7 @@ struct StudioControlView: View {
                     }
                 }
 
-                GroupBox("Control engine") {
+                GroupBox("Studio page") {
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: monitor.engineState == .available ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
                             .font(.title2)
@@ -608,7 +613,7 @@ struct StudioControlView: View {
                             Text(monitor.engineState.title).font(.headline)
                             Text(monitor.engineState.detail).font(.caption).foregroundStyle(.secondary)
                             if let contact = monitor.lastContact {
-                                Text("Last read-only local check: " + contact.formatted(date: .abbreviated, time: .standard))
+                                Text("Last local check: " + contact.formatted(date: .abbreviated, time: .standard))
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
@@ -618,22 +623,22 @@ struct StudioControlView: View {
                     .padding(4)
                 }
 
-                GroupBox("Service state") {
+                GroupBox("Services") {
                     VStack(alignment: .leading, spacing: 9) {
                         ServiceStateRow(name: "V4", state: watchdog.status.state == "unknown" ? .unavailable : .available, detail: watchdog.status.headline)
-                        ServiceStateRow(name: "FX30 bridge", state: monitor.fx30BridgeState, detail: "Read-only check: local bridge /record/status")
-                        ServiceStateRow(name: "FX30 camera", state: monitor.fx30State, detail: "Requires an enabled camera with a verified warm Sony control connection")
-                        ServiceStateRow(name: "OBS", state: monitor.obsState, detail: "Read-only check: OBS WebSocket Hello")
-                        ServiceStateRow(name: "Companion", state: monitor.engineState == .available ? .available : .unavailable, detail: monitor.engineState.title)
+                        ServiceStateRow(name: "FX30 bridge", state: monitor.fx30BridgeState, detail: "Local check")
+                        ServiceStateRow(name: "FX30 camera", state: monitor.fx30State, detail: "Verified Sony connection required")
+                        ServiceStateRow(name: "OBS", state: monitor.obsState, detail: "Local check")
+                        ServiceStateRow(name: "Studio page", state: monitor.engineState == .available ? .available : .unavailable, detail: monitor.engineState.title)
                     }
                     .padding(4)
                 }
 
-                GroupBox("RØDECaster recording space") {
+                GroupBox("RØDECaster space") {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             StatusPill(text: monitor.rodecasterCapacity.title, color: monitor.rodecasterCapacity.tint)
-                            Text(monitor.rodecasterCapacity.gateOpen ? "ARM and RECORD capacity check passed" : "BLOCKING ARM AND RECORD")
+                            Text(monitor.rodecasterCapacity.gateOpen ? "Ready to record" : "Recording blocked")
                                 .font(.headline)
                                 .foregroundStyle(monitor.rodecasterCapacity.gateOpen ? Color.secondary : Color.red)
                         }
@@ -679,10 +684,8 @@ struct StudioControlView: View {
                     .padding(4)
                 }
 
-                GroupBox("Visible Page 4") {
+                GroupBox("Studio page") {
                     VStack(alignment: .leading, spacing: 14) {
-                        Text("Only these locations are eligible: ARM 4/0/2, RECORD 4/1/0 and STOP 4/1/1. A Companion reply only proves it accepted the button action.")
-                            .font(.caption).foregroundStyle(.secondary)
                         HStack(spacing: 12) {
                             ControlButton(control: .arm, monitor: monitor, watchdog: watchdog.status, tint: .orange) {
                                 await monitor.press(.arm, watchdog: watchdog.status)
@@ -695,8 +698,14 @@ struct StudioControlView: View {
                                 await monitor.press(.stop, watchdog: watchdog.status)
                             }
                         }
-                        Text("StudioOS attempts a local folder baseline immediately before its RECORD request. After STOP, use Recording Folders once V4 has finished finalising the take.")
-                            .font(.caption).foregroundStyle(.secondary)
+                        Text("After STOP, use Recording Folders once V4 has finished the take.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        DisclosureGroup("Advanced details") {
+                            Text("Studio page buttons: ARM 4/0/2, RECORD 4/1/0 and STOP 4/1/1. StudioOS captures a local folder baseline before its RECORD request. A Companion reply only confirms the button action.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(4)
                 }
@@ -758,7 +767,7 @@ struct StudioControlView: View {
                         Text(currentStateLabel).font(.title2.bold())
                         Text(watchdog.status.headline).font(.headline)
                         Text(watchdog.status.message).foregroundStyle(.secondary)
-                        Text("This is V4 status evidence. It is not inferred from the button colour or the Companion reply.")
+                        Text("This is V4 status, not a button-colour check.")
                             .font(.caption).foregroundStyle(.secondary)
                         if watchdog.canRecoverFailedStop {
                             Divider()
@@ -863,14 +872,13 @@ private struct ControlButton: View {
         } label: {
             VStack(spacing: 5) {
                 Text(control.title).font(.title3.bold())
-                Text(control.rawValue).font(.caption.monospaced())
             }
             .frame(maxWidth: .infinity, minHeight: 58)
         }
         .buttonStyle(.borderedProminent)
         .tint(tint)
         .disabled(!monitor.canPress(control, watchdog: watchdog))
-        .accessibilityLabel(control.title + " visible Page 4 control")
+        .accessibilityLabel(control.title + " Studio page control")
     }
 }
 

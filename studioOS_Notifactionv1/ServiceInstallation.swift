@@ -271,15 +271,18 @@ struct InstallationSetupView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                Text("Install StudioOS services").font(.largeTitle.bold())
-                Text("StudioOS installs the FX30 bridge, production V4 coordinator and test-only watchdog as background services. It does not change Companion Page 4 controls.").foregroundStyle(.secondary)
+                Text("Set up StudioOS").font(.largeTitle.bold())
+                Text("Set up the local services. This does not change the Studio page buttons.").foregroundStyle(.secondary)
                 GroupBox("Before registering") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Choose and validate each recording folder. StudioOS writes machine-specific, non-secret configuration to Application Support; it does not create or claim recorder folders are correct.")
-                        Text("Recommended media root: /Users/studio/Movies/Studio. Select the actual JustIn, OBS-MASTERS, AUDIO-STEMS, Proxies and AUDIO/RODECASTER folders on this Mac; StudioOS will not create them.")
-                            .font(.caption).foregroundStyle(.secondary)
+                        Text("Point StudioOS at your five recording folders.")
+                        DisclosureGroup("Details") {
+                            Text("StudioOS saves machine-specific, non-secret configuration. It does not create folders or confirm that recorder folders are correct. Select the actual JustIn, OBS-MASTERS, AUDIO-STEMS, Proxies and AUDIO/RODECASTER folders on this Mac.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         ForEach(RecordingFolderRole.allCases) { role in
-                            HStack { VStack(alignment: .leading) { Text(role.title); Text(folders.checks[role]?.title ?? "Not chosen").font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("Choose") { folders.chooseFolder(for: role) } }
+                            HStack { VStack(alignment: .leading) { Text(role.title); Text(folders.checks[role]?.title ?? "Not chosen yet").font(.caption).foregroundStyle(.secondary) }; Spacer(); Button("Choose") { folders.chooseFolder(for: role) } }
                         }
                         HStack { Button("Check folders") { folders.checkAll() }; Button("Allow notifications") { notifications.requestPermission() }; Text("Notifications: \(notifications.statusLabel)").font(.caption).foregroundStyle(.secondary) }
                     }.padding(6)
@@ -290,7 +293,12 @@ struct InstallationSetupView: View {
                         serviceRow("Production V4 coordinator", port: 3060, state: services.v4State, health: services.v4Health)
                         serviceRow("Test-only watchdog", port: 3061, state: services.watchdogState, health: services.watchdogHealth)
                         HStack { Button("Write configuration and start services") { Task { await services.registerConfiguredServices(using: folders) } }.buttonStyle(.borderedProminent); Button("Refresh status") { Task { await services.refresh() } }; Button("Login Items") { services.openLoginItems() }; Button("Copy diagnostics") { services.copyDiagnostics() } }
-                        Text("The installer owns these three LaunchAgents. If a row says Awaiting approval, enable the StudioOS background item under System Settings > General > Login Items & Extensions, then refresh. A reachable health endpoint means only that a process responded; it is not recording or media proof.").font(.caption).foregroundStyle(.secondary)
+                        Text("A running service is not proof of a recording or delivered media.").font(.caption).foregroundStyle(.secondary)
+                        DisclosureGroup("Details") {
+                            Text("The installer owns these three LaunchAgents. If a row says Awaiting approval, enable the StudioOS background item under System Settings > General > Login Items & Extensions, then refresh. A reachable health endpoint means only that a process responded.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         if let message = services.actionMessage { Text(message).font(.callout) }
                     }.padding(6)
                 }
@@ -300,6 +308,7 @@ struct InstallationSetupView: View {
     }
 
     private func serviceRow(_ name: String, port: Int, state: StudioOSServiceState, health: StudioOSServiceHealth) -> some View {
-        HStack { VStack(alignment: .leading) { Text("\(name) · localhost:\(port)").font(.headline); Text("\(state.label) · \(health.reachable ? "Reachable" : "Not reachable") · \(health.detail)").font(.caption).foregroundStyle(.secondary) }; Spacer(); StatusPill(text: state.label.uppercased(), color: state == .registered ? .green : (state == .awaitingApproval ? .orange : .secondary)) }
+        let isRunning = state == .registered && health.reachable
+        return HStack { VStack(alignment: .leading) { Text("\(name) · localhost:\(port)").font(.headline); Text(isRunning ? "Running" : "\(state.label) · \(health.reachable ? "Reachable" : "Not reachable")").font(.caption).foregroundStyle(.secondary) }; Spacer(); StatusPill(text: isRunning ? "RUNNING" : state.label.uppercased(), color: isRunning ? .green : (state == .awaitingApproval ? .orange : .secondary)) }
     }
 }

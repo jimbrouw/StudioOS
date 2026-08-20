@@ -110,7 +110,7 @@ struct WatchdogStatus: Equatable {
                 state: "warning",
                 headline: "Unexpected local service",
                 message: "StudioOS received a status response, but it is not the expected local V4 studio service.",
-                operatorActions: ["Use the normal Page 4 controls. Check the V4 service before another take."],
+                operatorActions: ["Use the Studio page. Check V4 before another take."],
                 notificationIdentity: "unexpected-v4-service"
             )
         }
@@ -124,7 +124,7 @@ struct WatchdogStatus: Equatable {
                     state: "attention",
                     headline: "STOP was not confirmed",
                     message: "V4 still retains the take, but every requested Just In channel now reports stopped. Confirm the physical RØDECaster REC light and timer are off before using the guarded recovery.",
-                    operatorActions: ["Check OBS and, in camera mode, the FX30 status.", "Do not press Page 4 STOP again."],
+                    operatorActions: ["Check OBS and, in camera mode, FX30 status.", "Do not press Studio page STOP again."],
                     notificationIdentity: "failed-stop-attention|" + payload.requestedChannels.joined(separator: ","),
                     failedStopRecovery: recovery
                 )
@@ -136,7 +136,7 @@ struct WatchdogStatus: Equatable {
                     state: "attention",
                     headline: "Recording needs checking",
                     message: detail,
-                    operatorActions: ["Use the existing Page 4 STOP control if the take must end.", "Check the affected recorder and its media path."],
+                    operatorActions: ["Use the Studio page STOP control if the take must end.", "Check the affected recorder and its media path."],
                     notificationIdentity: "recording-attention|" + missing.joined(separator: ",")
                 )
             }
@@ -177,7 +177,7 @@ struct WatchdogStatus: Equatable {
                     state: "attention",
                     headline: summary.headline,
                     message: summary.detail,
-                    operatorActions: ["Keep the original media in place.", "Use the V4 status and the existing Page 4 workflow to investigate."],
+                    operatorActions: ["Keep the original media in place.", "Use V4 status and the Studio page to investigate."],
                     notificationIdentity: "post-record-attention|" + summary.headline + "|" + summary.detail,
                     postRecord: postRecord,
                     delivery: payload.delivery
@@ -202,7 +202,7 @@ struct WatchdogStatus: Equatable {
                 state: "warning",
                 headline: "V4 needs attention",
                 message: detail,
-                operatorActions: ["Do not use StudioOS to control recording.", "Check V4 with the normal Page 4 ARM workflow."],
+                operatorActions: ["Do not use StudioOS to control recording.", "Check V4 with the Studio page ARM workflow."],
                 notificationIdentity: "v4-attention|" + detail
             )
         }
@@ -305,7 +305,7 @@ final class WatchdogStatusMonitor: ObservableObject {
                 state: "unknown",
                 headline: "V4 status unavailable",
                 message: "StudioOS cannot reach the existing local V4 studio service. This does not confirm that recording stopped.",
-                operatorActions: ["Use the normal Page 4 controls independently.", "Check the V4 service before another take."],
+                operatorActions: ["Use the Studio page independently.", "Check V4 before another take."],
                 notificationIdentity: "v4-status-unavailable"
             )
             status = unavailable

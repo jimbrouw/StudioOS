@@ -255,7 +255,7 @@ private struct WatchdogStatusView: View {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Recording Status").font(.largeTitle.bold())
-                        Text("Read-only display for the existing V4 studio service. StudioOS cannot record, stop, change storage, control cameras, or recover media.")
+                        Text("What's happening with the current take.")
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -305,14 +305,16 @@ private struct WatchdogStatusView: View {
                     }
                 }
 
-                GroupBox("After STOP: delivery task") {
+                GroupBox("After the take") {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("V4 waits for the Just In files to settle, checks the masters on the Extreme SSD, creates playable proxies, then copies and verifies the Just In masters and proxies in LucidLink.")
+                        Text("V4 checks the Just In masters, then makes and verifies proxies.")
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text("It does not delete media or control OBS, cameras, or the RØDECaster. OBS masters, stems, and RØDECaster audio remain separately visible delivery stages until their source routes are connected.")
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                        DisclosureGroup("Details") {
+                            Text("V4 waits for files to settle on the Extreme SSD, creates playable proxies, then copies and verifies Just In masters and proxies in LucidLink. It does not delete media or control OBS, cameras or the RØDECaster. Those sources remain separate delivery stages.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
 
                         if let delivery = monitor.status.delivery {
                             Divider()
@@ -366,7 +368,7 @@ private struct WatchdogStatusView: View {
                                         }
                                     }
                                     Spacer()
-                                    Text(check.passed ? "Passed" : "Needs attention")
+                                    Text(check.passed ? "Passed" : "Check this")
                                         .font(.caption.weight(.semibold))
                                         .foregroundStyle(check.passed ? .green : .orange)
                                 }
@@ -399,8 +401,13 @@ private struct WatchdogStatusView: View {
                     }
                 }
 
-                Text("A green result means V4 reports its local post-record checks passed. StudioOS does not control Page 4 or independently prove editor delivery.")
+                Text(monitor.status.isGreen ? "Checks passed. Confirm the media yourself before wrapping." : "StudioOS is showing V4 status. Confirm the media yourself before wrapping.")
                     .font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("Details") {
+                    Text("StudioOS only reads V4 status. It does not control the Studio page or independently prove editor delivery.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding(28)
         }
