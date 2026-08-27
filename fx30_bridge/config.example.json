@@ -1,0 +1,87 @@
+{
+  "host": "0.0.0.0",
+  "port": 3030,
+  "commandTimeoutSeconds": 90,
+  "ingestTimeoutSeconds": 1800,
+  "modeSwitchDelaySeconds": 0.5,
+  "releaseWarmAfterStop": false,
+  "postStopDebounceSeconds": 5,
+  "stableFileSeconds": 30,
+  "macNotifications": true,
+  "openDashboard": true,
+  "dashboardHost": "127.0.0.1",
+  "proxyExtensions": [".mp4", ".mxf"],
+  "obs": {
+    "masterFolder": "/Volumes/Extreme SSD/TEST-RECS/OBS-MASTERS",
+    "deliveryFolder": "OBS-MASTERS",
+    "copyStableFiles": true,
+    "copyAudioStems": true,
+    "audioStemsFolder": "AUDIO-STEMS",
+    "audioStemsDeliveryFolder": "AUDIO-STEMS",
+    "expectedCameraCount": 1,
+    "retentionHours": 24
+  },
+  "zowieResolutionGuard": {
+    "enabled": false,
+    "requiredWidth": 3840,
+    "requiredHeight": 2160,
+    "timeoutSeconds": 5,
+    "retrySeconds": 30,
+    "retryIntervalSeconds": 2,
+    "devices": [
+      {
+        "cameraId": "fx30-a",
+        "name": "Zowie A",
+        "host": "192.168.0.101",
+        "username": "admin",
+        "passwordEnv": "FX30_ZOWIE_A_PASSWORD",
+        "allowFactoryDefaultPassword": false,
+        "enabled": true
+      }
+    ]
+  },
+  "nativeFtp": {
+    "enabled": false,
+    "arrivalTimeoutSeconds": 1800,
+    "pollSeconds": 5
+  },
+  "cameras": [
+    {
+      "id": "fx30-a",
+      "startCommand": ["./sony-rec", "--camera", "fx30-a", "--action", "start"],
+      "stopCommand": ["./sony-rec", "--camera", "fx30-a", "--action", "stop"],
+      "ingestCommand": ["./sony-rec", "--camera", "fx30-a", "--action", "ingest-proxy", "--dest", "/Users/jim/Movies/FX30_A"],
+      "masterIngestCommand": ["./sony-rec", "--camera", "fx30-a", "--action", "ingest-master", "--dest", "/Users/jim/Movies/FX30_A_MASTERS"],
+      "statusCommand": ["./sony-rec", "--camera", "fx30-a", "--action", "status"],
+      "ftp-testCommand": ["./sony-rec", "--camera", "fx30-a", "--action", "ftp-test"],
+      "ingestFolder": "/Users/jim/Movies/FX30_A",
+      "masterIngestFolder": "/Users/jim/Movies/FX30_A_MASTERS",
+      "password": "",
+      "enabled": true
+    },
+    {
+      "id": "fx30-b",
+      "startCommand": ["./sony-rec", "--camera", "fx30-b", "--action", "start"],
+      "stopCommand": ["./sony-rec", "--camera", "fx30-b", "--action", "stop"],
+      "ingestCommand": ["./sony-rec", "--camera", "fx30-b", "--action", "ingest-proxy", "--dest", "/Users/jim/Movies/FX30_B"],
+      "masterIngestCommand": ["./sony-rec", "--camera", "fx30-b", "--action", "ingest-master", "--dest", "/Users/jim/Movies/FX30_B_MASTERS"],
+      "statusCommand": ["./sony-rec", "--camera", "fx30-b", "--action", "status"],
+      "ftp-testCommand": ["./sony-rec", "--camera", "fx30-b", "--action", "ftp-test"],
+      "ingestFolder": "/Users/jim/Movies/FX30_B",
+      "masterIngestFolder": "/Users/jim/Movies/FX30_B_MASTERS",
+      "enabled": false
+    },
+    {
+      "id": "fx30-c",
+      "startCommand": ["./sony-rec", "--camera", "fx30-c", "--action", "start"],
+      "stopCommand": ["./sony-rec", "--camera", "fx30-c", "--action", "stop"],
+      "ingestCommand": ["./sony-rec", "--camera", "fx30-c", "--action", "ingest-proxy", "--dest", "/Users/jim/Movies/FX30_C"],
+      "masterIngestCommand": ["./sony-rec", "--camera", "fx30-c", "--action", "ingest-master", "--dest", "/Users/jim/Movies/FX30_C_MASTERS"],
+      "statusCommand": ["./sony-rec", "--camera", "fx30-c", "--action", "status"],
+      "ftp-testCommand": ["./sony-rec", "--camera", "fx30-c", "--action", "ftp-test"],
+      "ingestFolder": "/Users/jim/Movies/FX30_C",
+      "masterIngestFolder": "/Users/jim/Movies/FX30_C_MASTERS",
+      "enabled": false
+    }
+  ]
+}

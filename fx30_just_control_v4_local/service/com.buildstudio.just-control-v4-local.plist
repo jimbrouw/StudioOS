@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.buildstudio.just-control-v4-local</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/podcaststudio/Developer/StudioOS-Build-V4/fx30_just_control_v4_local/v4_bridge.py</string>
+    <string>--config</string>
+    <string>/Users/podcaststudio/Developer/StudioOS-Build-V4/fx30_just_control_v4_local/config.json</string>
+    <string>--port</string>
+    <string>3060</string>
+    <string>--open-dashboard</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>V4_SERVICE_ALLOW_PRODUCTION_PORT</key>
+    <string>approved</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>/Users/podcaststudio/Developer/StudioOS-Build-V4/fx30_just_control_v4_local</string>
+  <key>StandardOutPath</key>
+  <string>/Users/podcaststudio/Library/Logs/BuildStudio/V4/v4-service.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/podcaststudio/Library/Logs/BuildStudio/V4/v4-service.log</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+    <key>Crashed</key>
+    <true/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

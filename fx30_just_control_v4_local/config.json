@@ -1,0 +1,100 @@
+{
+  "recorderMode": "obs",
+  "obs": {
+    "host": "127.0.0.1",
+    "port": 4455,
+    "timeoutSeconds": 5,
+    "recordingRoot": "/Users/podcaststudio/Documents/OBS_MASTERS"
+  },
+  "api": {
+    "host": "127.0.0.1",
+    "port": 8080,
+    "timeoutSeconds": 5
+  },
+  "bridge": {
+    "host": "127.0.0.1",
+    "port": 3060,
+    "stableSeconds": 3,
+    "settleTimeoutSeconds": 120
+  },
+  "sourceRoot": "/Users/podcaststudio/Documents/OBS_MASTERS",
+  "backupRoot": null,
+  "deliveryRoot": "/Volumes/specialized2026/studio/Studio Recordings/OBS Masters",
+  "proxyWorkingRoot": "/Users/podcaststudio/Documents/PROXIES",
+  "proxyDeliveryRoot": "/Volumes/specialized2026/studio/Studio Recordings/OBS Proxies",
+  "delivery": {
+    "provider": "LucidLink",
+    "root": "/Volumes/specialized2026/studio/Studio Recordings",
+    "justInMasters": "/Volumes/specialized2026/studio/Studio Recordings/OBS Masters",
+    "justInProxies": "/Volumes/specialized2026/studio/Studio Recordings/OBS Proxies",
+    "obsMasters": "/Volumes/specialized2026/studio/Studio Recordings/OBS Masters",
+    "obsAudioStems": "/Volumes/specialized2026/studio/Studio Recordings/OBS Audio Stems",
+    "rodecasterAudio": "/Volumes/specialized2026/studio/Studio Recordings/RØDECaster Audio"
+  },
+  "extensions": [".mov", ".mp4", ".mxf", ".wav"],
+  "proxyExtensions": [".mov", ".mp4", ".mxf"],
+  "postRecord": {
+    "enabled": true,
+    "localOnly": false,
+    "ffmpegPath": "/opt/homebrew/bin/ffmpeg",
+    "ffprobePath": "/opt/homebrew/bin/ffprobe",
+    "proxyHeight": 1080,
+    "proxyVideoBitrate": "10M",
+    "proxyAudioBitrate": "192k",
+    "macNotifications": {
+      "enabled": true,
+      "postRecordSuccess": false
+    }
+  },
+  "storagePolicy": {
+    "targetHours": 3,
+    "safetyMarginPercent": 15,
+    "extremeSsdBaselineGBPerHour": 607,
+    "proxyBaselineGBPerHour": 14,
+    "rodecasterBaselineGBPerHour": null,
+    "rodecasterStaleHours": 24,
+    "rodecasterConfirmationMinutes": 15,
+    "rodecasterOverrideMinutes": 5,
+    "rodecasterOverridePhrase": "OVERRIDE RØDECASTER CAPACITY",
+    "includeRodecasterInPreflight": false,
+    "includeRodecasterInCompletion": false,
+    "stateFile": "/Users/podcaststudio/Developer/StudioOS-Build-V4/.studio_storage_state_v4_local.json",
+    "modeFile": "/Users/podcaststudio/Developer/StudioOS-Build-V4/.studio_record_mode",
+    "fx30StatusUrl": "http://127.0.0.1:3030/record/status",
+    "fx30RefreshUrl": "http://127.0.0.1:3030/record/card-status",
+    "rodecasterCleanupCommand": [
+      "/Users/podcaststudio/Developer/StudioOS-Build-V4/transfer_and_ingest_rodecaster_local.command"
+    ]
+  },
+  "requireAllChannels": true,
+  "channels": [
+    {"name": "Channel1", "enabled": true},
+    {"name": "Channel2", "enabled": true},
+    {"name": "Channel3", "enabled": true}
+  ],
+  "recovery": {
+    "enabled": false,
+    "localTestOnly": true,
+    "stagingRoot": "/Volumes/Extreme SSD/STUDIO-RECOVERY",
+    "deliveryRoot": "/Volumes/specialized2026/studio/Studio Recordings/Studio Recovery",
+    "durationDifferenceSeconds": 30,
+    "livenessPollSeconds": 10,
+    "noGrowthWarningSeconds": 10,
+    "noGrowthFailureSeconds": 30,
+    "mappings": [
+      {"logicalCamera": 1, "ndiLabel": "NDI 1", "justInChannel": "Channel1", "fx30CameraId": "fx30-a", "cameraLabel": "Camera 1", "zowieHost": "192.168.0.101", "enabled": true},
+      {"logicalCamera": 2, "ndiLabel": "NDI 2", "justInChannel": "Channel2", "fx30CameraId": "fx30-b", "cameraLabel": "Camera 2", "zowieHost": "192.168.0.102", "enabled": true},
+      {"logicalCamera": 3, "ndiLabel": "NDI 3", "justInChannel": "Channel3", "fx30CameraId": "fx30-c", "cameraLabel": "Camera 3", "zowieHost": "192.168.0.103", "enabled": true}
+    ],
+    "zowiePrerequisite": {
+      "state": "unresolved",
+      "detail": "ZowieBox recording errors are unresolved. Recovery remains local-test only."
+    },
+    "notifier": {
+      "consumerOnly": true,
+      "recipient": "Jim",
+      "retentionDays": 30,
+      "heartbeatLossState": "status_unknown"
+    }
+  }
+}

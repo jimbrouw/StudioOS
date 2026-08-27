@@ -1,0 +1,90 @@
+{
+  "api": {
+    "host": "127.0.0.1",
+    "port": 8080,
+    "timeoutSeconds": 5
+  },
+  "bridge": {
+    "host": "127.0.0.1",
+    "port": 3060,
+    "stableSeconds": 3,
+    "settleTimeoutSeconds": 120
+  },
+  "sourceRoot": "/Volumes/Extreme SSD/JUSTCONTROL_RECORDING",
+  "backupRoot": null,
+  "deliveryRoot": "/Volumes/Extreme SSD/JUSTCONTROL_RECORDING",
+  "proxyWorkingRoot": "/Volumes/Extreme SSD/Proxies",
+  "proxyDeliveryRoot": "/Volumes/Extreme SSD/Proxies",
+  "extensions": [".mov", ".mp4", ".mxf", ".wav"],
+  "proxyExtensions": [".mov", ".mp4", ".mxf"],
+  "postRecord": {
+    "enabled": true,
+    "localOnly": true,
+    "ffmpegPath": "/opt/homebrew/bin/ffmpeg",
+    "ffprobePath": "/opt/homebrew/bin/ffprobe",
+    "proxyHeight": 1080,
+    "proxyVideoBitrate": "10M",
+    "proxyAudioBitrate": "192k"
+  },
+  "storagePolicy": {
+    "targetHours": 3,
+    "safetyMarginPercent": 15,
+    "extremeSsdBaselineGBPerHour": 607,
+    "proxyBaselineGBPerHour": 14,
+    "rodecasterBaselineGBPerHour": null,
+    "rodecasterStaleHours": 24,
+    "rodecasterConfirmationMinutes": 15,
+    "rodecasterOverrideMinutes": 5,
+    "rodecasterOverridePhrase": "OVERRIDE RØDECASTER CAPACITY",
+    "includeRodecasterInPreflight": false,
+    "includeRodecasterInCompletion": false,
+    "stateFile": "/Users/jim/Developer/build/.studio_storage_state_v4_local.json",
+    "modeFile": "/Users/jim/Developer/build/.studio_record_mode",
+    "fx30StatusUrl": "http://127.0.0.1:3030/record/status",
+    "fx30RefreshUrl": "http://127.0.0.1:3030/record/card-status",
+    "rodecasterCleanupCommand": [
+      "/Users/jim/Developer/build/transfer_and_ingest_rodecaster_local.command"
+    ]
+  },
+  "requireAllChannels": true,
+  "failedStopRecovery": {
+    "recordingLockPath": "/private/tmp/strict_studio_recording.lock",
+    "stopMarkerPath": "/private/tmp/strict_studio_stop_v4_local.sent",
+    "obs": {
+      "host": "127.0.0.1",
+      "port": 4455,
+      "timeoutSeconds": 3,
+      "passwordEnvironment": "OBS_WEBSOCKET_PASSWORD"
+    }
+  },
+  "channels": [
+    {"name": "Channel1", "enabled": true},
+    {"name": "Channel2", "enabled": false},
+    {"name": "Channel3", "enabled": false}
+  ],
+  "recovery": {
+    "enabled": false,
+    "localTestOnly": true,
+    "stagingRoot": "/Volumes/Extreme SSD/STUDIO-RECOVERY",
+    "deliveryRoot": "/Volumes/test-studio/recordings/STUDIO-RECOVERY",
+    "durationDifferenceSeconds": 30,
+    "livenessPollSeconds": 10,
+    "noGrowthWarningSeconds": 10,
+    "noGrowthFailureSeconds": 30,
+    "mappings": [
+      {"logicalCamera": 1, "ndiLabel": "NDI 1", "justInChannel": "Channel1", "fx30CameraId": "fx30-a", "cameraLabel": "Camera 1", "zowieHost": "192.168.0.101", "enabled": true},
+      {"logicalCamera": 2, "ndiLabel": "NDI 2", "justInChannel": "Channel2", "fx30CameraId": "fx30-b", "cameraLabel": "Camera 2", "enabled": false},
+      {"logicalCamera": 3, "ndiLabel": "NDI 3", "justInChannel": "Channel3", "fx30CameraId": "fx30-c", "cameraLabel": "Camera 3", "enabled": false}
+    ],
+    "zowiePrerequisite": {
+      "state": "unresolved",
+      "detail": "ZowieBox recording errors are unresolved. Recovery remains local-test only."
+    },
+    "notifier": {
+      "consumerOnly": true,
+      "recipient": "Jim",
+      "retentionDays": 30,
+      "heartbeatLossState": "status_unknown"
+    }
+  }
+}

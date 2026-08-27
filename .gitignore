@@ -1,0 +1,20 @@
+# macOS and Python build state
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# Runtime logs and local databases
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+fx30_bridge/audit.log
+
+# Password-bearing and machine-local configuration
+fx30_bridge/config.json
+fx30_bridge/config.json.backup-*
+.studio_storage_state_v4_local.json
+
+# Local test and service state
+fx30_bridge/Contents/
+fx30_bridge/service-activation-backups/

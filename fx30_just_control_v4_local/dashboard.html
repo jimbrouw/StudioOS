@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Just In Mac Lite NDI V4 Local Endurance Dashboard</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080b0d;
+      --panel: #11171b;
+      --line: #263138;
+      --muted: #93a0a8;
+      --text: #f3f6f7;
+      --green: #62d58b;
+      --amber: #ffc857;
+      --red: #ff5d66;
+      --blue: #63b3ff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: radial-gradient(circle at 50% -20%, #1c282d, var(--bg) 44%); color: var(--text); font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 48px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 20px; }
+    h1 { margin: 0; font-size: clamp(22px, 4vw, 34px); letter-spacing: .02em; }
+    h1 span { color: var(--red); }
+    .live { display: flex; align-items: center; gap: 9px; color: var(--muted); white-space: nowrap; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); box-shadow: 0 0 14px var(--red); }
+    .dot.ok { background: var(--green); box-shadow: 0 0 14px var(--green); }
+    .postHero { margin: 0 0 20px; padding: clamp(22px, 4vw, 38px); border: 2px solid var(--line); border-radius: 18px; background: linear-gradient(135deg, rgba(25,32,36,.98), rgba(10,14,16,.98)); box-shadow: 0 22px 60px rgba(0,0,0,.34); transition: border-color .2s, background .2s; }
+    .postHero.complete { border-color: var(--green); background: linear-gradient(135deg, rgba(29,93,53,.54), rgba(10,29,18,.98)); box-shadow: 0 22px 70px rgba(98,213,139,.14); }
+    .postHero.attention { border-color: var(--amber); background: linear-gradient(135deg, rgba(106,75,14,.56), rgba(32,23,8,.98)); }
+    .postHero.running { border-color: var(--blue); background: linear-gradient(135deg, rgba(21,70,108,.58), rgba(8,24,37,.98)); }
+    .postHero.recording { border-color: var(--red); background: linear-gradient(135deg, rgba(112,24,31,.62), rgba(38,7,10,.98)); }
+    .postHero h2 { max-width: 1000px; margin: 8px 0 8px; font-size: clamp(30px, 5vw, 58px); line-height: .98; letter-spacing: -.035em; }
+    .postHero .heroDetail { max-width: 900px; margin: 0; color: #d1d9dd; font-size: clamp(15px, 2vw, 19px); }
+    .heroChecks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin-top: 22px; }
+    .heroCheck { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; background: rgba(0,0,0,.18); color: #d1d9dd; }
+    .heroCheck strong { color: var(--muted); font-size: 11px; letter-spacing: .08em; }
+    .heroCheck.pass strong { color: var(--green); }
+    .heroCheck.fail strong { color: var(--red); }
+    .heroFooter { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 18px; }
+    .heroTime { color: var(--muted); }
+    button.bigFiles { padding: 14px 20px; border-color: var(--text); background: var(--text); color: #0b0e10; font-size: 16px; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+    .card { grid-column: span 4; background: linear-gradient(145deg, rgba(20,27,31,.96), rgba(12,17,20,.96)); border: 1px solid var(--line); border-radius: 14px; padding: 18px; min-height: 165px; box-shadow: 0 18px 48px rgba(0,0,0,.22); }
+    .card.wide { grid-column: span 8; }
+    .eyebrow { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+    .value { margin: 8px 0 3px; font-size: 27px; font-weight: 750; }
+    .sub { color: var(--muted); min-height: 22px; overflow-wrap: anywhere; }
+    .actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
+    button { appearance: none; border: 1px solid #46545d; border-radius: 8px; padding: 10px 14px; background: #20292e; color: var(--text); font: inherit; font-weight: 700; cursor: pointer; }
+    button:hover:not(:disabled) { border-color: #7c8d97; transform: translateY(-1px); }
+    button:disabled { opacity: .36; cursor: not-allowed; }
+    button.primary { background: var(--red); border-color: var(--red); color: #180305; }
+    button.danger { background: transparent; border-color: var(--red); color: #ff8b91; }
+    button.stop { background: var(--amber); border-color: var(--amber); color: #171000; }
+    button.amber { background: var(--amber); border-color: var(--amber); color: #171000; }
+    .progress { height: 9px; margin-top: 18px; background: #050708; border-radius: 20px; overflow: hidden; border: 1px solid #202a30; }
+    .progress > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--blue), #a6d6ff); transition: width .35s ease; }
+    .pipeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 18px; }
+    .stage { padding: 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: 12px; text-align: center; }
+    .stage.active { border-color: var(--blue); color: var(--text); background: rgba(99,179,255,.1); }
+    .stage.done { border-color: #34744c; color: var(--green); }
+    .checks { display: grid; gap: 8px; margin-top: 13px; }
+    .check { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); }
+    .check b { color: var(--green); }
+    .check b.bad { color: var(--red); }
+    .error { color: #ff9298; margin-top: 8px; }
+    #toast { position: fixed; right: 20px; bottom: 20px; max-width: min(430px, calc(100% - 40px)); padding: 13px 16px; border-radius: 10px; background: #273139; box-shadow: 0 12px 40px rgba(0,0,0,.45); opacity: 0; transform: translateY(8px); pointer-events: none; transition: .2s; }
+    #toast.show { opacity: 1; transform: none; }
+    @media (max-width: 820px) { .card, .card.wide { grid-column: 1 / -1; } .pipeline, .heroChecks { grid-template-columns: 1fr 1fr; } .heroFooter { align-items: stretch; flex-direction: column; } }
+    @media (max-width: 520px) { .heroChecks { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><div class="eyebrow">FX30 Studio · Local Endurance Mode</div><h1>Just In Mac Lite NDI <span>V4 LOCAL</span></h1></div>
+      <div class="live"><i id="connectionDot" class="dot"></i><span id="connection">Connecting…</span></div>
+    </header>
+    <section id="postRecordHero" class="postHero pending" aria-live="polite">
+      <div class="eyebrow">Post-record verification</div>
+      <h2 id="postRecordHeadline">CHECKING LAST RECORDING…</h2>
+      <p id="postRecordDetail" class="heroDetail">Reading local SSD verification results.</p>
+      <div id="postRecordChecks" class="heroChecks"></div>
+      <div class="heroFooter">
+        <div id="postRecordCompletedAt" class="heroTime">No completed check loaded</div>
+        <div class="actions">
+          <button id="acknowledgePostRecordButton" type="button">ACKNOWLEDGE OLD CHECK</button>
+          <button id="openDeliveredFilesButton" class="bigFiles" type="button">SHOW LOCAL FILES IN FINDER</button>
+        </div>
+      </div>
+    </section>
+    <section class="grid">
+      <article class="card">
+        <div class="eyebrow">Recorder</div>
+        <div id="recordingValue" class="value">Checking…</div>
+        <div id="recordingSub" class="sub">Reading camera channels</div>
+        <div class="actions">
+          <button id="startButton" class="primary" type="button">Record Start</button>
+          <button id="stopButton" class="stop" type="button">Record Stop</button>
+        </div>
+      </article>
+      <article class="card wide">
+        <div class="eyebrow">Post-record pipeline</div>
+        <div id="postValue" class="value">Idle</div>
+        <div id="postSub" class="sub">No post-record work running</div>
+        <div id="proxyTiming" class="sub">Proxy timing will appear while proxies are being made.</div>
+        <div class="progress"><div id="progressBar"></div></div>
+        <div class="pipeline">
+          <div class="stage" data-stage="copying_masters">Finalise SSD masters</div>
+          <div class="stage" data-stage="creating_proxies">Create SSD proxies</div>
+          <div class="stage" data-stage="copying_proxies">Verify proxies</div>
+          <div class="stage" data-stage="complete">Local complete</div>
+        </div>
+        <div class="actions"><button id="cancelButton" class="danger" type="button">Cancel Post-Record</button></div>
+        <div id="postError" class="error"></div>
+      </article>
+      <article class="card">
+        <div class="eyebrow">Camera channels</div>
+        <div id="channelValue" class="value">—</div>
+        <div id="channelSub" class="sub">Waiting for Just In Mac Lite NDI</div>
+      </article>
+      <article class="card">
+        <div class="eyebrow">Storage readiness</div>
+        <div id="storageValue" class="value">Checking…</div>
+        <div id="checks" class="checks"></div>
+        <div class="actions"><button id="storageRefreshButton" type="button">Refresh Storage</button></div>
+      </article>
+      <article class="card wide">
+        <div class="eyebrow">Three-hour pre-flight · fail closed</div>
+        <div id="capacityValue" class="value">Checking…</div>
+        <div id="capacitySub" class="sub">RØDECaster capacity must be confirmed from its device screen or app.</div>
+        <div id="capacitySurfaces" class="checks"></div>
+        <div class="actions">
+          <button id="confirmCapacityButton" class="primary" type="button">Confirm RØDECaster Time</button>
+          <button id="overrideCapacityButton" class="amber" type="button">Amber Override</button>
+          <button id="recoverCapacityButton" type="button">Clear / Recover</button>
+          <button id="cleanStorageButton" type="button">Archive RØDECaster to SSD (Manual)</button>
+        </div>
+        <div id="cleanupStatus" class="sub">Manual RØDECaster archive idle · card copies are retained</div>
+      </article>
+      <article class="card wide">
+        <div class="eyebrow">Latest activity</div>
+        <div id="activityValue" class="value">Bridge started</div>
+        <div id="activitySub" class="sub">Live status refreshes every second</div>
+      </article>
+    </section>
+  </main>
+  <div id="toast"></div>
+  <script src="/dashboard.js"></script>
+</body>
+</html>

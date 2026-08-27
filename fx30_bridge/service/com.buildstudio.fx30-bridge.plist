@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.buildstudio.fx30-bridge</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/podcaststudio/Developer/StudioOS-Build-V4/fx30_bridge/service/run_fx30_production_service.command</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/podcaststudio/Developer/StudioOS-Build-V4/fx30_bridge</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/podcaststudio/Library/Logs/BuildStudio/FX30/production-launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/podcaststudio/Library/Logs/BuildStudio/FX30/production-launchd.err.log</string>
+</dict>
+</plist>
