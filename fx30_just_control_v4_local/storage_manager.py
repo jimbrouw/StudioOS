@@ -73,6 +73,7 @@ class StorageManager:
         self.lucidlink_root = Path(config.get("deliveryRoot", "/Volumes/specialized2026/studio/Studio Recordings"))
         self.ffprobe_path = str((config.get("postRecord") or {}).get("ffprobePath", "/opt/homebrew/bin/ffprobe"))
         self._rate_cache = {"checked": None, "value": self.ssd_rate}
+        self._sony_cache: list[dict] | None = None
 
     def _write_state(self, state: dict) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -408,11 +409,15 @@ class StorageManager:
     def _sony(self) -> list[dict]:
         if self._mode() == "ndi-test":
             return [{"key": f"fx30-{name}", "label": f"FX30 {name.upper()} card", "status": "bypassed", "required": False, "message": "Bypassed in ndi-test mode"} for name in ("a", "b", "c")]
+        if self._sony_cache is not None:
+            return [row.copy() for row in self._sony_cache]
         try:
             with urlopen(self.fx30_status_url, timeout=5) as response:
                 payload = json.load(response)
         except (OSError, URLError, ValueError):
-            return [{"key": "fx30-enabled", "label": "Enabled FX30 cards", "status": "warning", "required": True, "message": "Card capacity unavailable"}]
+            rows = [{"key": "fx30-enabled", "label": "Enabled FX30 cards", "status": "warning", "required": True, "message": "Card capacity unavailable"}]
+            self._sony_cache = rows
+            return [row.copy() for row in rows]
         reports = payload.get("cardStatus") or {}
         enabled_ids = [
             str(camera.get("id"))
@@ -420,7 +425,9 @@ class StorageManager:
             if camera.get("id")
         ]
         if not enabled_ids:
-            return [{"key": "fx30-enabled", "label": "Enabled FX30 cards", "status": "warning", "required": True, "message": "No enabled camera status available"}]
+            rows = [{"key": "fx30-enabled", "label": "Enabled FX30 cards", "status": "warning", "required": True, "message": "No enabled camera status available"}]
+            self._sony_cache = rows
+            return [row.copy() for row in rows]
         rows = []
         for camera_id in enabled_ids:
             key = camera_id
@@ -435,7 +442,8 @@ class StorageManager:
             else:
                 status, message = "ready", f"{remaining:.0f} minutes remaining"
             rows.append({"key": key, "label": f"{camera_id.upper()} card", "status": status, "required": True, "remainingMinutes": remaining, "message": message})
-        return rows
+        self._sony_cache = rows
+        return [row.copy() for row in rows]
 
     def refresh_sony(self) -> None:
         if self._mode() == "ndi-test":
@@ -444,7 +452,8 @@ class StorageManager:
         try:
             urlopen(request, timeout=40).read()
         except (OSError, URLError):
-            return
+            pass
+        self._sony_cache = None
 
     def report(self, *, refresh_sony: bool = False) -> dict:
         if refresh_sony:

@@ -18,3 +18,12 @@ fx30_bridge/config.json.backup-*
 # Local test and service state
 fx30_bridge/Contents/
 fx30_bridge/service-activation-backups/
+
+# Reproducible build output and local rollback binaries
+fx30_bridge/.pyinstaller-build*/
+fx30_bridge/.pyinstaller-spec*/
+fx30_bridge/packaged-bridge-*/
+fx30_bridge/install-fixed-fx30-bridge.command
+fx30_bridge/run-fx30-bridge-fixed
+fx30_bridge/sony-rec.new
+fx30_bridge/sony-rec.pre-full-*

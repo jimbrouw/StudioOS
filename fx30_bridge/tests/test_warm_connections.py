@@ -426,6 +426,152 @@ class WarmConnectionTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         subprocess_run.assert_not_called()
 
+    @patch("bridge.warm_controller_for")
+    def test_ftp_test_uses_identity_verified_warm_connection(self, warm_controller_for):
+        controller = MagicMock()
+        controller.run.return_value = {"id": "fx30-a", "ok": True}
+        warm_controller_for.return_value = controller
+
+        result = bridge.run_camera_command(
+            {"id": "fx30-a", "mac": "78:F5:05:44:97:0E", "warmConnection": True},
+            "ftp-test",
+            12,
+        )
+
+        self.assertTrue(result["ok"])
+        controller.run.assert_called_once_with("ftp-test", 12)
+
+    @patch("bridge.subprocess.run")
+    def test_format_command_includes_configured_mac(self, subprocess_run):
+        subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        config = {
+            "cameras": [{
+                "id": "fx30-a",
+                "enabled": True,
+                "mac": "78:F5:05:44:97:0E",
+            }],
+        }
+
+        result = bridge.format_camera_card(config, "fx30-a", 1)
+
+        self.assertTrue(result["ok"])
+        command = subprocess_run.call_args.args[0]
+        self.assertEqual(command[command.index("--mac") + 1], "78:F5:05:44:97:0E")
+
+    @patch("cleanup_manager.subprocess.run")
+    def test_cleanup_delete_command_includes_configured_mac(self, subprocess_run):
+        subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        config = {
+            "cameras": [{
+                "id": "fx30-a",
+                "enabled": True,
+                "mac": "78:F5:05:44:97:0E",
+            }],
+        }
+
+        result = cleanup_manager.delete_camera_file(config, "fx30-a", "C0001.MP4")
+
+        self.assertTrue(result["ok"])
+        command = subprocess_run.call_args.args[0]
+        self.assertEqual(command[command.index("--mac") + 1], "78:F5:05:44:97:0E")
+
+    @patch("bridge.Thread")
+    @patch("bridge.run_camera_command", return_value={"ok": True, "stdout": 'SONY_REC_CARD_STATUS {"ok":true,"slots":[]}'})
+    @patch("bridge.warm_controller_for")
+    @patch("bridge.time.sleep")
+    def test_card_status_restarts_warm_connection_in_background(
+        self,
+        _sleep,
+        warm_controller_for,
+        _run_camera_command,
+        thread,
+    ):
+        controller = MagicMock()
+        controller.proc.poll.return_value = None
+        warm_controller_for.return_value = controller
+        bridge.CAMERA_CONTROLLERS["fx30-a"] = controller
+        config = {
+            "cameras": [{"id": "fx30-a", "enabled": True}],
+            "commandTimeoutSeconds": 12,
+        }
+
+        result = bridge.refresh_camera_card_status(config, "fx30-a")
+
+        self.assertTrue(result["ok"])
+        controller.stop.assert_called_once()
+        thread.assert_called_once_with(target=controller.start, args=(12,), daemon=True)
+        thread.return_value.start.assert_called_once()
+        bridge.CAMERA_CONTROLLERS.pop("fx30-a", None)
+
+    @patch("bridge.update_ingest_progress")
+    @patch("bridge.enabled_cameras")
+    @patch("bridge.warm_enabled_cameras")
+    def test_post_ingest_restart_delegates_to_parallel_warm_helper(
+        self,
+        warm_enabled_cameras,
+        enabled_cameras,
+        update_ingest_progress,
+    ):
+        config = {"cameras": [{"id": "fx30-a"}, {"id": "fx30-b", "warmConnection": False}]}
+        enabled_cameras.return_value = config["cameras"]
+        warm_enabled_cameras.return_value = [
+            {"id": "fx30-a", "ok": True, "warmConnection": True},
+            {"id": "fx30-b", "ok": False, "warmConnection": False},
+        ]
+
+        restarted = bridge.restart_warm_controllers_after_ingest(config)
+
+        warm_enabled_cameras.assert_called_once_with(config, probe_status=False)
+        self.assertEqual(restarted, [{"id": "fx30-a", "ok": True}])
+        update_ingest_progress.assert_called_once_with(warmConnectionsRestarted=restarted)
+
+    @patch("bridge.open_dashboard")
+    @patch("bridge.subprocess.Popen")
+    @patch("bridge.enabled_cameras")
+    @patch("bridge.warm_enabled_cameras")
+    def test_background_initialization_never_opens_operator_apps(
+        self,
+        warm_enabled_cameras,
+        enabled_cameras,
+        popen,
+        open_dashboard,
+    ):
+        config = {"cameras": [{"id": "fx30-a"}]}
+        enabled_cameras.return_value = config["cameras"]
+        warm_enabled_cameras.return_value = [{"id": "fx30-a", "ok": True, "warmConnection": True}]
+
+        bridge.initialize_cameras(config, open_operator_apps=False)
+
+        warm_enabled_cameras.assert_called_once_with(config, probe_status=False)
+        popen.assert_not_called()
+        open_dashboard.assert_not_called()
+
+    @patch("bridge.open_dashboard")
+    @patch("bridge.subprocess.Popen")
+    @patch("bridge.enabled_cameras")
+    @patch("bridge.warm_enabled_cameras")
+    def test_foreground_initialization_opens_operator_apps_only_when_ready(
+        self,
+        warm_enabled_cameras,
+        enabled_cameras,
+        popen,
+        open_dashboard,
+    ):
+        config = {"cameras": [{"id": "fx30-a"}]}
+        enabled_cameras.return_value = config["cameras"]
+        warm_enabled_cameras.return_value = [{"id": "fx30-a", "ok": False, "warmConnection": False}]
+
+        bridge.initialize_cameras(config, open_operator_apps=True)
+
+        popen.assert_not_called()
+        open_dashboard.assert_not_called()
+
+        warm_enabled_cameras.return_value = [{"id": "fx30-a", "ok": True, "warmConnection": True}]
+        bridge.initialize_cameras(config, open_operator_apps=True)
+
+        popen.assert_called_once()
+        open_dashboard.assert_called_once_with(config)
+
 
 if __name__ == "__main__":
     unittest.main()

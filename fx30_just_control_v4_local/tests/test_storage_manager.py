@@ -96,6 +96,25 @@ class StorageManagerTests(unittest.TestCase):
             self.assertEqual([item["key"] for item in rows], ["fx30-a"])
             self.assertEqual(rows[0]["status"], "ready")
 
+    def test_sony_card_status_is_cached_until_explicit_refresh(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            root.joinpath("mode").write_text("fx30-test")
+            payload = {
+                "cameraStatus": [{"id": "fx30-a", "warmConnection": True}],
+                "cardStatus": {"fx30-a": {"slots": [{"remainingMinutes": 240}]}},
+            }
+            manager = StorageManager(config_for(root))
+            responses = [io.BytesIO(json.dumps(payload).encode()) for _ in range(3)]
+            with patch("storage_manager.urlopen", side_effect=responses) as request:
+                manager._sony()
+                manager._sony()
+                self.assertEqual(request.call_count, 1)
+
+                manager.refresh_sony()
+                manager._sony()
+                self.assertEqual(request.call_count, 3)
+
     def test_multiple_paths_on_same_ssd_produce_one_surface(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

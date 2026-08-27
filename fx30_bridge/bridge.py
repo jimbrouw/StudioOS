@@ -2130,7 +2130,7 @@ class WarmCameraController:
             self.terminal_fd, child_fd = pty.openpty()
             self.proc = subprocess.Popen(
                 command,
-                cwd=Path(__file__).resolve().parent,
+                cwd=Path(command[0]).resolve().parent,
                 stdin=child_fd,
                 stdout=child_fd,
                 stderr=child_fd,
@@ -2230,6 +2230,10 @@ class WarmCameraController:
             }
 
     def stop(self):
+        with self.lock:
+            self._stop_locked()
+
+    def _stop_locked(self):
         proc = self.proc
         self.proc = None
         if not proc:
@@ -2327,6 +2331,13 @@ def warm_enabled_cameras(config, probe_status=True, block=True):
                     "error": "Warm camera connection is disabled in config",
                 }
                 continue
+            if not camera.get("persistentWarmConnection", True):
+                if any(result is not None for result in results[:index]):
+                    time.sleep(config.get("warmConnectDelaySeconds", 0))
+                result = run_camera_command(camera, "status", timeout_seconds)
+                result["warmConnection"] = bool(result.get("ok"))
+                results[index] = result
+                continue
             eligible.append((index, camera, warm_controller_for(camera)))
 
         def warm_camera(camera, controller):
@@ -2353,7 +2364,13 @@ def warm_enabled_cameras(config, probe_status=True, block=True):
                 result.setdefault("elapsedSeconds", round(time.time() - started_at, 3))
             return result
 
-        if eligible:
+        parallel_warm_connect = config.get("parallelWarmConnect", True)
+        if eligible and not probe_status and not parallel_warm_connect:
+            for position, (index, camera, controller) in enumerate(eligible):
+                if position:
+                    time.sleep(config.get("warmConnectDelaySeconds", 0))
+                results[index] = warm_camera(camera, controller)
+        elif eligible:
             with ThreadPoolExecutor(max_workers=len(eligible), thread_name_prefix="fx30-warm") as executor:
                 futures = [
                     (index, executor.submit(warm_camera, camera, controller))
@@ -2448,7 +2465,11 @@ def initialize_cameras(config, open_operator_apps):
 
 
 def run_camera_command(camera, action, timeout_seconds=4):
-    if action in {"start", "stop", "status"} and camera.get("warmConnection", True):
+    if (
+        action in {"start", "stop", "status", "ftp-test"}
+        and camera.get("warmConnection", True)
+        and camera.get("persistentWarmConnection", True)
+    ):
         result = warm_controller_for(camera).run(action, timeout_seconds)
         return result
 
@@ -2468,7 +2489,7 @@ def run_camera_command(camera, action, timeout_seconds=4):
             env["SONY_REC_PASSWORD"] = camera["password"]
         proc = subprocess.run(
             command,
-            cwd=Path(__file__).resolve().parent,
+            cwd=Path(command[0]).resolve().parent,
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
@@ -2531,7 +2552,11 @@ def refresh_camera_card_status(config, camera_id):
         status["ok"] = False
         status["error"] = result.get("error") or result.get("warning") or status.get("error") or "Camera status request failed"
     if was_warm:
-        warm_controller_for(camera).start(config.get("commandTimeoutSeconds", 90))
+        Thread(
+            target=warm_controller_for(camera).start,
+            args=(config.get("commandTimeoutSeconds", 90),),
+            daemon=True,
+        ).start()
     with STATE_LOCK:
         STATE.setdefault("card_status", {})[camera_id] = status
     return status
@@ -2560,7 +2585,13 @@ def format_camera_card(config, camera_id, slot):
     camera = next((item for item in enabled_cameras(config) if item["id"] == camera_id), None)
     if not camera:
         return {"ok": False, "error": "Camera is not enabled"}
-    command = ["./sony-rec", "--camera", camera_id, "--action", "format-card", "--slot", str(slot), "--confirm-format"]
+    if not camera.get("mac"):
+        return {"ok": False, "error": "Camera has no configured MAC; refusing to format without exact identity"}
+    helper = Path(__file__).resolve().parent / "sony-rec"
+    command = [
+        str(helper), "--camera", camera_id, "--mac", camera["mac"],
+        "--action", "format-card", "--slot", str(slot), "--confirm-format",
+    ]
     env = sony_command_environment(command)
     if camera.get("password"):
         env["SONY_REC_PASSWORD"] = camera["password"]

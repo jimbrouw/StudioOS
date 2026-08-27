@@ -26,11 +26,13 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include "CRSDK/CameraRemote_SDK.h"
@@ -82,6 +84,10 @@ struct Args {
     std::string cameraLabel;
     std::string mac;
     std::string action;
+    std::string destination;
+    std::string filename;
+    int slot = 0;
+    bool confirmFormat = false;
     bool server = false;
 };
 
@@ -95,9 +101,19 @@ bool parseArgs(int argc, char** argv, Args& out, std::string& err) {
         if (a == "--camera") out.cameraLabel = next("--camera");
         else if (a == "--mac") out.mac = next("--mac");
         else if (a == "--action") out.action = next("--action");
+        else if (a == "--dest") out.destination = next("--dest");
+        else if (a == "--filename") out.filename = next("--filename");
+        else if (a == "--slot") {
+            const std::string value = next("--slot");
+            if (!err.empty()) return false;
+            try {
+                out.slot = std::stoi(value);
+            } catch (...) {
+                err = "Invalid value for --slot";
+            }
+        }
+        else if (a == "--confirm-format") out.confirmFormat = true;
         else if (a == "--server") out.server = true;
-        // Accept and ignore legacy flags so old config entries don't hard-fail.
-        else if (a == "--dest" || a == "--filename" || a == "--slot") { next(a.c_str()); }
         if (!err.empty()) return false;
     }
     return true;
@@ -110,6 +126,12 @@ public:
     std::atomic<bool> connected{false};
     std::atomic<bool> disconnected{false};
     std::atomic<CrInt32u> lastError{0};
+    bool transferFinished = false;
+    bool transferOk = false;
+    CrInt32u transferPercent = 0;
+    std::string transferFilename;
+    bool formatFinished = false;
+    bool formatOk = false;
 
     void OnConnected(SDK::DeviceConnectionVersioin) override {
         connected = true;
@@ -122,6 +144,31 @@ public:
     void OnError(CrInt32u error) override {
         lastError = error;
         cv.notify_all();
+    }
+
+    void OnNotifyRemoteTransferResult(CrInt32u notify, CrInt32u percent, CrChar* filename) override {
+        std::lock_guard<std::mutex> lock(mtx);
+        transferPercent = percent;
+        if (filename) transferFilename = filename;
+        if (notify == SDK::CrNotify_RemoteTransfer_Result_OK) {
+            transferOk = true;
+            transferFinished = true;
+        } else if (notify == SDK::CrNotify_RemoteTransfer_Result_NG ||
+                   notify == SDK::CrNotify_RemoteTransfer_Result_DeviceBusy) {
+            transferOk = false;
+            transferFinished = true;
+        }
+        cv.notify_all();
+    }
+
+    void OnWarning(CrInt32u warning) override {
+        if (warning == SDK::CrWarning_Format_Complete || warning == SDK::CrWarning_Format_Failed ||
+            warning == SDK::CrWarning_Format_Invalid || warning == SDK::CrWarning_Format_Canceled) {
+            std::lock_guard<std::mutex> lock(mtx);
+            formatOk = warning == SDK::CrWarning_Format_Complete;
+            formatFinished = true;
+            cv.notify_all();
+        }
     }
 };
 
@@ -291,19 +338,132 @@ ActionOutcome doStartStop(SDK::CrDeviceHandle handle, bool start) {
     return out;
 }
 
+std::string basename(const CrInt8* rawPath) {
+    const std::string path = rawPath ? reinterpret_cast<const char*>(rawPath) : "";
+    const auto separator = path.find_last_of("/\\");
+    return separator == std::string::npos ? path : path.substr(separator + 1);
+}
+
+using CaptureKey = std::tuple<CrInt16u, CrInt16u, CrInt16u, CrInt16u, CrInt16u, CrInt16u, CrInt16u>;
+
+CaptureKey captureKey(const SDK::CrCaptureDate& value) {
+    return {value.year, value.month, value.day, value.hour, value.minute, value.sec, value.msec};
+}
+
+struct TransferCandidate {
+    bool found = false;
+    SDK::CrSlotNumber slot = SDK::CrSlotNumber_Slot1;
+    CrInt32u contentId = 0;
+    CrInt32u fileId = 0;
+    CrInt64u fileSize = 0;
+    std::string filename;
+    CaptureKey captured{};
+};
+
+ActionOutcome doIngest(SDK::CrDeviceHandle handle, Callback& callback, const Args& args, bool proxy) {
+    ActionOutcome out;
+    if (args.destination.empty()) {
+        out.error = "Missing --dest for camera transfer";
+        return out;
+    }
+
+    std::error_code directoryError;
+    std::filesystem::create_directories(args.destination, directoryError);
+    if (directoryError) {
+        out.error = "Could not create destination: " + directoryError.message();
+        return out;
+    }
+
+    TransferCandidate newest;
+    for (const auto slot : {SDK::CrSlotNumber_Slot1, SDK::CrSlotNumber_Slot2}) {
+        SDK::CrContentsInfo* contents = nullptr;
+        CrInt32u contentCount = 0;
+        const auto listStatus = SDK::GetRemoteTransferContentsInfoList(
+            handle, slot, SDK::CrGetContentsInfoListType_All, nullptr, 0, &contents, &contentCount);
+        if (CR_FAILED(listStatus) || !contents) continue;
+
+        for (CrInt32u contentIndex = 0; contentIndex < contentCount; ++contentIndex) {
+            const auto captured = captureKey(contents[contentIndex].creationDatetimeLocaltime);
+            for (CrInt32u fileIndex = 0; fileIndex < contents[contentIndex].filesNum; ++fileIndex) {
+                const auto& file = contents[contentIndex].files[fileIndex];
+                if (!file.isVideoParamExsist) continue;
+                const bool isProxy = file.videoParam.proxyStatus;
+                const bool isFourKMaster = !isProxy && file.videoParam.width >= 3840 && file.videoParam.height >= 2160;
+                if ((proxy && !isProxy) || (!proxy && !isFourKMaster)) continue;
+                if (!newest.found || captured > newest.captured) {
+                    newest = {true, slot, contents[contentIndex].contentId, file.fileId,
+                              file.fileSize, basename(file.filePath), captured};
+                }
+            }
+        }
+        SDK::ReleaseRemoteTransferContentsInfoList(handle, contents);
+    }
+
+    if (!newest.found || newest.filename.empty()) {
+        out.error = proxy ? "No proxy movie was found on either camera slot"
+                          : "No 4K master movie was found on either camera slot";
+        return out;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(callback.mtx);
+        callback.transferFinished = false;
+        callback.transferOk = false;
+        callback.transferPercent = 0;
+        callback.transferFilename.clear();
+    }
+    std::string destination = args.destination;
+    std::string filename = newest.filename;
+    const auto transferStatus = SDK::GetRemoteTransferContentsDataFile(
+        handle, newest.slot, newest.contentId, newest.fileId, 0x5000000,
+        destination.data(), filename.data());
+    if (CR_FAILED(transferStatus)) {
+        out.error = "Sony rejected the contents transfer request";
+        return out;
+    }
+
+    std::unique_lock<std::mutex> lock(callback.mtx);
+    const bool completed = callback.cv.wait_for(lock, 30min, [&callback] {
+        return callback.transferFinished || callback.disconnected.load();
+    });
+    if (!completed) {
+        SDK::ControlGetRemoteTransferContentsDataFile(handle, SDK::CrGetContentsDataControlType_Cancel);
+        out.error = "Camera transfer timed out after 30 minutes";
+        return out;
+    }
+    if (!callback.transferOk) {
+        out.error = "Camera reported that the contents transfer failed";
+        return out;
+    }
+
+    const std::filesystem::path downloaded = callback.transferFilename.empty()
+        ? std::filesystem::path(args.destination) / newest.filename
+        : std::filesystem::path(callback.transferFilename);
+    out.ok = true;
+    out.extraJson = "\"file\":\"" + jsonEscape(downloaded.string()) +
+                    "\",\"fileName\":\"" + jsonEscape(newest.filename) +
+                    "\",\"sizeBytes\":" + std::to_string(newest.fileSize);
+    flushLine("File: " + downloaded.string());
+    return out;
+}
+
 // Prints the SONY_REC_CARD_STATUS line the dashboard expects. Read-only.
 bool doCardStatus(SDK::CrDeviceHandle handle) {
     CrInt64u recState = 0;
     bool recordingOk = readProperty(handle, SDK::CrDeviceProperty_RecordingState, recState);
     bool recording = recordingOk && (recState == SDK::CrMovie_Recording_State_Recording);
 
-    struct SlotInfo { int slot; bool present; CrInt64u remainingMinutes; };
-    SlotInfo slots[2] = {{1, false, 0}, {2, false, 0}};
+    struct SlotInfo { int slot; bool present; CrInt64u remainingMinutes; bool fullFormatAvailable; };
+    SlotInfo slots[2] = {{1, false, 0, false}, {2, false, 0, false}};
 
     struct SlotCodes { CrInt32u status, remaining; };
     SlotCodes codes[2] = {
         {SDK::CrDeviceProperty_MediaSLOT1_Status, SDK::CrDeviceProperty_MediaSLOT1_RemainingTime},
         {SDK::CrDeviceProperty_MediaSLOT2_Status, SDK::CrDeviceProperty_MediaSLOT2_RemainingTime},
+    };
+    const CrInt32u formatCodes[2] = {
+        SDK::CrDeviceProperty_MediaSLOT1_FormatEnableStatus,
+        SDK::CrDeviceProperty_MediaSLOT2_FormatEnableStatus,
     };
 
     bool anySlotOk = false;
@@ -315,6 +475,10 @@ bool doCardStatus(SDK::CrDeviceHandle handle) {
         anySlotOk = true;
         CrInt64u remaining = 0;
         if (readProperty(handle, codes[s].remaining, remaining)) slots[s].remainingMinutes = remaining;
+        CrInt64u formatAvailable = 0;
+        if (readProperty(handle, formatCodes[s], formatAvailable)) {
+            slots[s].fullFormatAvailable = formatAvailable == SDK::CrMediaFormat_Enable;
+        }
     }
 
     if (!anySlotOk && !recordingOk) {
@@ -330,14 +494,122 @@ bool doCardStatus(SDK::CrDeviceHandle handle) {
         if (!slots[s].present) continue;
         if (!first) oss << ",";
         first = false;
-        // Format is never offered in this MVP build (see the format-card stub).
         oss << "{\"slot\":" << slots[s].slot
             << ",\"remainingMinutes\":" << slots[s].remainingMinutes
-            << ",\"fullFormatAvailable\":false,\"quickFormatAvailable\":false}";
+            << ",\"fullFormatAvailable\":" << (slots[s].fullFormatAvailable ? "true" : "false")
+            << ",\"quickFormatAvailable\":false}";
     }
     oss << "]}";
     flushLine(oss.str());
     return true;
+}
+
+ActionOutcome doFormatCard(SDK::CrDeviceHandle handle, Callback& callback, const Args& args) {
+    ActionOutcome out;
+    if (!args.confirmFormat || (args.slot != 1 && args.slot != 2)) {
+        out.error = "Format requires --slot 1|2 and --confirm-format";
+        return out;
+    }
+    CrInt64u recordingState = 0;
+    if (!readProperty(handle, SDK::CrDeviceProperty_RecordingState, recordingState) ||
+        recordingState == SDK::CrMovie_Recording_State_Recording) {
+        out.error = "Refusing to format while recording state is unknown or recording is active";
+        return out;
+    }
+    const CrInt32u formatCode = args.slot == 1
+        ? SDK::CrDeviceProperty_MediaSLOT1_FormatEnableStatus
+        : SDK::CrDeviceProperty_MediaSLOT2_FormatEnableStatus;
+    CrInt64u formatAvailable = 0;
+    if (!readProperty(handle, formatCode, formatAvailable) || formatAvailable != SDK::CrMediaFormat_Enable) {
+        out.error = "Sony reports that full format is unavailable for this slot";
+        return out;
+    }
+    {
+        std::lock_guard<std::mutex> lock(callback.mtx);
+        callback.formatFinished = false;
+        callback.formatOk = false;
+    }
+    const auto parameter = args.slot == 1 ? SDK::CrCommandParam_Up : SDK::CrCommandParam_Down;
+    const auto status = SDK::SendCommand(handle, SDK::CrCommandId_MediaFormat, parameter);
+    if (CR_FAILED(status)) {
+        out.error = "Camera rejected the full-format command";
+        return out;
+    }
+    std::unique_lock<std::mutex> lock(callback.mtx);
+    const bool completed = callback.cv.wait_for(lock, 15min, [&callback] {
+        return callback.formatFinished || callback.disconnected.load();
+    });
+    if (!completed) {
+        SDK::SendCommand(handle, SDK::CrCommandId_CancelMediaFormat, SDK::CrCommandParam_Down);
+        out.error = "Timed out waiting for camera-card format completion";
+        return out;
+    }
+    if (!callback.formatOk) {
+        out.error = "Camera reported that card format failed or was canceled";
+        return out;
+    }
+    out.ok = true;
+    out.extraJson = "\"slot\":" + std::to_string(args.slot);
+    return out;
+}
+
+ActionOutcome doDeleteFile(SDK::CrDeviceHandle handle, const Args& args) {
+    ActionOutcome out;
+    if (args.filename.empty()) {
+        out.error = "Missing --filename for delete-file";
+        return out;
+    }
+    for (const auto slot : {SDK::CrSlotNumber_Slot1, SDK::CrSlotNumber_Slot2}) {
+        SDK::CrContentsInfo* contents = nullptr;
+        CrInt32u contentCount = 0;
+        const auto listStatus = SDK::GetRemoteTransferContentsInfoList(
+            handle, slot, SDK::CrGetContentsInfoListType_All, nullptr, 0, &contents, &contentCount);
+        if (CR_FAILED(listStatus) || !contents) continue;
+        for (CrInt32u contentIndex = 0; contentIndex < contentCount; ++contentIndex) {
+            bool matches = false;
+            for (CrInt32u fileIndex = 0; fileIndex < contents[contentIndex].filesNum; ++fileIndex) {
+                if (basename(contents[contentIndex].files[fileIndex].filePath) == args.filename) {
+                    matches = true;
+                    break;
+                }
+            }
+            if (!matches) continue;
+            const CrInt32u contentId = contents[contentIndex].contentId;
+            SDK::ReleaseRemoteTransferContentsInfoList(handle, contents);
+            const auto deleteStatus = SDK::DeleteRemoteTransferContentsFile(handle, slot, contentId);
+            if (CR_FAILED(deleteStatus)) {
+                out.error = "Camera rejected deletion of the matched content";
+                return out;
+            }
+            out.ok = true;
+            out.extraJson = "\"filename\":\"" + jsonEscape(args.filename) + "\"";
+            return out;
+        }
+        SDK::ReleaseRemoteTransferContentsInfoList(handle, contents);
+    }
+    out.error = "Exact filename was not found on either camera slot";
+    return out;
+}
+
+ActionOutcome doFtpTest(SDK::CrDeviceHandle handle) {
+    ActionOutcome out;
+    const auto requestStatus = SDK::RequestFTPServerSettingList(handle);
+    if (CR_FAILED(requestStatus)) {
+        out.error = "Camera does not allow a read-only FTP settings request in the current mode";
+        return out;
+    }
+    std::this_thread::sleep_for(500ms);
+    SDK::CrFTPServerSetting* settings = nullptr;
+    CrInt32u count = 0;
+    const auto getStatus = SDK::GetFTPServerSettingList(handle, &settings, &count);
+    if (CR_FAILED(getStatus)) {
+        out.error = "Camera did not return its FTP server settings";
+        return out;
+    }
+    if (settings) SDK::ReleaseFTPServerSettingList(handle, settings);
+    out.ok = true;
+    out.extraJson = "\"configuredServerCount\":" + std::to_string(count) + ",\"readOnly\":true";
+    return out;
 }
 
 ActionOutcome unsupported(const std::string& action) {
@@ -346,7 +618,7 @@ ActionOutcome unsupported(const std::string& action) {
     return out;
 }
 
-ActionOutcome runAction(SDK::CrDeviceHandle handle, const std::string& action) {
+ActionOutcome runAction(SDK::CrDeviceHandle handle, Callback& callback, const Args& args, const std::string& action) {
     if (action == "status") return doStatus(handle);
     if (action == "start") return doStartStop(handle, true);
     if (action == "stop") return doStartStop(handle, false);
@@ -355,9 +627,12 @@ ActionOutcome runAction(SDK::CrDeviceHandle handle, const std::string& action) {
         out.ok = doCardStatus(handle);
         return out;
     }
-    if (action == "ingest-proxy" || action == "ingest-new" || action == "ingest-master" ||
-        action == "proxy-info" || action == "proxy-lowest" || action == "format-card" ||
-        action == "delete-file" || action == "ftp-test") {
+    if (action == "ingest-proxy" || action == "ingest-new") return doIngest(handle, callback, args, true);
+    if (action == "ingest-master") return doIngest(handle, callback, args, false);
+    if (action == "format-card") return doFormatCard(handle, callback, args);
+    if (action == "delete-file") return doDeleteFile(handle, args);
+    if (action == "ftp-test") return doFtpTest(handle);
+    if (action == "proxy-info" || action == "proxy-lowest") {
         return unsupported(action);
     }
     ActionOutcome out;
@@ -416,12 +691,12 @@ int main(int argc, char** argv) {
             while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
             if (line.empty()) continue;
             if (line == "quit") break;
-            auto outcome = runAction(conn.handle, line);
+            auto outcome = runAction(conn.handle, cb, args, line);
             printResult(outcome.ok, outcome.extraJson, outcome.error);
             if (cb.disconnected.load()) break;
         }
     } else {
-        auto outcome = runAction(conn.handle, args.action);
+        auto outcome = runAction(conn.handle, cb, args, args.action);
         if (args.action != "card-status" && args.action != "cardStatus") {
             printResult(outcome.ok, outcome.extraJson, outcome.error);
         }

@@ -7,7 +7,7 @@ set -euo pipefail
 
 SERVICE_DIR="$(cd "$(dirname "$0")" && pwd)"
 PACKAGE_DIR="$(cd "$SERVICE_DIR/.." && pwd)"
-CONFIG_PATH="$PACKAGE_DIR/config.json"
+CONFIG_PATH="$HOME/Library/Application Support/StudioOS/Config/fx30-bridge.json"
 LOG_DIR="/Users/podcaststudio/Library/Logs/BuildStudio/FX30"
 SERVICE_LOG="$LOG_DIR/production-service.log"
 

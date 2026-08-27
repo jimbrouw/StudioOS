@@ -264,17 +264,21 @@ def delete_camera_file(config, camera_id, filename):
     helper_path = Path(__file__).resolve().parent / "sony-rec"
     if not helper_path.exists():
         return {"ok": False, "error": "sony-rec helper executable not found."}
+    camera_config = cameras[camera_id]
+    if not camera_config.get("mac"):
+        return {"ok": False, "error": "Camera has no configured MAC; refusing deletion without exact identity."}
     
     cmd = [
         str(helper_path),
         "--camera", camera_id,
+        "--mac", camera_config["mac"],
         "--action", "delete-file",
         "--filename", filename
     ]
     
     env = os.environ.copy()
+    env["DYLD_LIBRARY_PATH"] = f"{helper_path.parent}:{helper_path.parent / 'CrAdapter'}"
     env["SONY_REC_NONINTERACTIVE"] = "1"
-    camera_config = cameras[camera_id]
     if camera_config.get("password"):
         env["SONY_REC_PASSWORD"] = camera_config["password"]
 
