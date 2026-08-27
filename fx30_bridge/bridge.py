@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import html
 import json
@@ -56,6 +57,8 @@ STATE = {
 STATE_LOCK = Lock()
 CONFIG_LOCK = Lock()
 CAMERA_CONTROLLERS = {}
+CAMERA_CONTROLLERS_LOCK = Lock()
+WARM_BATCH_LOCK = Lock()
 
 
 def format_recording_time(seconds):
@@ -2108,6 +2111,10 @@ class WarmCameraController:
         self.identity_error = None
 
     def start(self, timeout_seconds):
+        with self.lock:
+            return self._start_locked(timeout_seconds)
+
+    def _start_locked(self, timeout_seconds):
         if self.proc and self.proc.poll() is None:
             return True
 
@@ -2140,7 +2147,7 @@ class WarmCameraController:
                 ready = self._assert_identity(ready_line)
             if ready:
                 return True
-            self.stop()
+            self._stop_locked()
             if attempt == 0:
                 print(f"Warm camera connection {self.camera['id']} failed on first attempt; retrying once before giving up.")
                 continue
@@ -2172,7 +2179,7 @@ class WarmCameraController:
     def run(self, action, timeout_seconds):
         started_at = time.time()
         with self.lock:
-            if not self.start(timeout_seconds):
+            if not self._start_locked(timeout_seconds):
                 return {
                     "id": self.camera["id"],
                     "ok": False,
@@ -2183,7 +2190,7 @@ class WarmCameraController:
             try:
                 os.write(self.terminal_fd, (action + "\n").encode())
             except Exception as exc:
-                self.stop()
+                self._stop_locked()
                 return {
                     "id": self.camera["id"],
                     "ok": False,
@@ -2195,7 +2202,7 @@ class WarmCameraController:
                 # A running helper process is not proof that the Sony link is
                 # still usable. Drop it after a timed-out command so status
                 # cannot advertise a stale warm connection as camera-ready.
-                self.stop()
+                self._stop_locked()
                 return {
                     "id": self.camera["id"],
                     "ok": False,
@@ -2238,6 +2245,16 @@ class WarmCameraController:
             except OSError:
                 pass
             self.terminal_fd = None
+        if proc.poll() is None:
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=1)
 
     def _server_command(self):
         command = self.camera.get("statusCommand") or self.camera.get("startCommand")
@@ -2279,17 +2296,80 @@ class WarmCameraController:
 
 
 def warm_controller_for(camera):
-    controller = CAMERA_CONTROLLERS.get(camera["id"])
-    if controller is None:
-        controller = WarmCameraController(camera)
-        CAMERA_CONTROLLERS[camera["id"]] = controller
-    return controller
+    with CAMERA_CONTROLLERS_LOCK:
+        controller = CAMERA_CONTROLLERS.get(camera["id"])
+        if controller is None:
+            controller = WarmCameraController(camera)
+            CAMERA_CONTROLLERS[camera["id"]] = controller
+        return controller
+
+
+def existing_warm_controller(camera_id):
+    with CAMERA_CONTROLLERS_LOCK:
+        return CAMERA_CONTROLLERS.get(camera_id)
+
+
+def warm_enabled_cameras(config, probe_status=True, block=True):
+    """Warm enabled cameras concurrently and return ordered, fail-closed results."""
+    if not WARM_BATCH_LOCK.acquire(blocking=block):
+        return None
+    try:
+        cameras = list(enabled_cameras(config))
+        results = [None] * len(cameras)
+        eligible = []
+        timeout_seconds = config.get("commandTimeoutSeconds", 90)
+        for index, camera in enumerate(cameras):
+            if not camera.get("warmConnection", True):
+                results[index] = {
+                    "id": camera["id"],
+                    "ok": False,
+                    "warmConnection": False,
+                    "error": "Warm camera connection is disabled in config",
+                }
+                continue
+            eligible.append((index, camera, warm_controller_for(camera)))
+
+        def warm_camera(camera, controller):
+            started_at = time.time()
+            try:
+                if probe_status:
+                    result = dict(controller.run("status", timeout_seconds))
+                else:
+                    ready = controller.start(timeout_seconds)
+                    result = {
+                        "id": camera["id"],
+                        "ok": ready,
+                        "error": None if ready else controller.identity_error or "Warm camera connection did not become ready",
+                    }
+            except Exception as exc:
+                result = {
+                    "id": camera["id"],
+                    "ok": False,
+                    "error": f"Warm camera connection failed: {exc}",
+                }
+            result["id"] = camera["id"]
+            result["warmConnection"] = bool(result.get("ok"))
+            if not probe_status:
+                result.setdefault("elapsedSeconds", round(time.time() - started_at, 3))
+            return result
+
+        if eligible:
+            with ThreadPoolExecutor(max_workers=len(eligible), thread_name_prefix="fx30-warm") as executor:
+                futures = [
+                    (index, executor.submit(warm_camera, camera, controller))
+                    for index, camera, controller in eligible
+                ]
+                for index, future in futures:
+                    results[index] = future.result()
+        return results
+    finally:
+        WARM_BATCH_LOCK.release()
 
 
 def stop_warm_controllers(config, reason="switching camera mode"):
     stopped = []
     for camera in enabled_cameras(config):
-        controller = CAMERA_CONTROLLERS.get(camera["id"])
+        controller = existing_warm_controller(camera["id"])
         if controller and controller.proc and controller.proc.poll() is None:
             controller.stop()
             stopped.append(camera["id"])
@@ -2310,37 +2390,61 @@ def stop_warm_controllers_for_ingest(config):
 
 
 def restart_warm_controllers_after_ingest(config):
-    restarted = []
-    for camera in enabled_cameras(config):
-        if not camera.get("warmConnection", True):
-            continue
-        controller = warm_controller_for(camera)
-        ok = controller.start(config.get("commandTimeoutSeconds", 90))
-        restarted.append({
-            "id": camera["id"],
-            "ok": ok,
-        })
+    results = warm_enabled_cameras(config, probe_status=False)
+    warm_camera_ids = {
+        camera["id"]
+        for camera in enabled_cameras(config)
+        if camera.get("warmConnection", True)
+    }
+    restarted = [
+        {"id": result["id"], "ok": result.get("ok", False)}
+        for result in results
+        if result["id"] in warm_camera_ids
+    ]
     if restarted:
         update_ingest_progress(warmConnectionsRestarted=restarted)
     return restarted
 
 
-def ensure_warm_controllers(config):
+def ensure_warm_controllers(config, block=True):
     """Open and read-only probe every enabled Sony camera connection."""
-    results = []
-    for camera in enabled_cameras(config):
-        if not camera.get("warmConnection", True):
-            results.append({
-                "id": camera["id"],
-                "ok": False,
-                "error": "Warm camera connection is disabled in config",
-            })
-            continue
-        controller = warm_controller_for(camera)
-        result = controller.run("status", config.get("commandTimeoutSeconds", 90))
-        result["warmConnection"] = bool(result.get("ok"))
-        results.append(result)
-    return results
+    return warm_enabled_cameras(config, probe_status=True, block=block)
+
+
+def initialize_cameras(config, open_operator_apps):
+    results = warm_enabled_cameras(config, probe_status=False)
+    required_camera_ids = {
+        camera["id"]
+        for camera in enabled_cameras(config)
+        if camera.get("warmConnection", True)
+    }
+    required_results = [
+        result for result in results if result["id"] in required_camera_ids
+    ]
+    for result in results:
+        print(f"Warm camera connection {result['id']}: {'ready' if result.get('ok') else 'not ready; will fall back'}")
+    all_ready = bool(required_results) and all(result.get("ok") for result in required_results)
+    if all_ready and open_operator_apps:
+        obs_path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        subprocess.Popen(
+            [
+                "/usr/bin/open",
+                "--env",
+                f"PATH={obs_path}",
+                "-b",
+                "com.obsproject.obs-studio",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        open_dashboard(config)
+    elif all_ready:
+        print("FX30 background warm initialization completed; OBS and browser launch suppressed.")
+    else:
+        failed_ids = ", ".join(
+            result["id"] for result in required_results if not result.get("ok")
+        )
+        print(f"FX30 dashboard not opened because warm connections remain unready: {failed_ids}.")
 
 
 def run_camera_command(camera, action, timeout_seconds=4):
@@ -2415,7 +2519,7 @@ def refresh_camera_card_status(config, camera_id):
             "message": "Card status is held while recording, copying, or changing camera state.",
         }
 
-    controller = CAMERA_CONTROLLERS.get(camera_id)
+    controller = existing_warm_controller(camera_id)
     was_warm = bool(controller and controller.proc and controller.proc.poll() is None)
     if was_warm:
         controller.stop()
@@ -3528,7 +3632,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
             })
             return
 
-        results = ensure_warm_controllers(self.config)
+        results = ensure_warm_controllers(self.config, block=False)
+        if results is None:
+            json_response(self, 409, {
+                "ok": False,
+                "action": "record/warm",
+                "error": "Warm reconnect already in progress",
+            })
+            return
         ok = bool(results) and all(result.get("ok") for result in results)
         payload = {
             "ok": ok,
@@ -3675,7 +3786,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         }
         stable_seconds = self.config.get("stableFileSeconds", 30)
         for camera in enabled_cameras(self.config):
-            controller = CAMERA_CONTROLLERS.get(camera["id"])
+            controller = existing_warm_controller(camera["id"])
             warm_running = bool(
                 controller
                 and controller.proc
@@ -3785,7 +3896,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if not report.get("ok") or not slot_report or not slot_report.get("fullFormatAvailable"):
             json_response(self, 409, {"ok": False, "error": "Sony SDK has not confirmed that full format is available for this slot."})
             return
-        controller = CAMERA_CONTROLLERS.get(camera_id)
+        controller = existing_warm_controller(camera_id)
         if controller and controller.proc and controller.proc.poll() is None:
             controller.stop()
         result = format_camera_card(self.config, camera_id, slot)
@@ -3963,50 +4074,29 @@ def main():
 
     BridgeHandler.config = config
     BridgeHandler.config_path = config_path
-    warm_results = []
-    # A background service proves only that the bridge is available. It must
-    # not manufacture camera readiness or hold a Sony connection before ARM.
-    # The guarded /record/warm probe establishes and verifies that connection.
-    if not args.background_service:
-        for camera in enabled_cameras(config):
-            if camera.get("warmConnection", True):
-                controller = warm_controller_for(camera)
-                ok = controller.start(config.get("commandTimeoutSeconds", 90))
-                warm_results.append(ok)
-                print(f"Warm camera connection {camera['id']}: {'ready' if ok else 'not ready; will fall back'}")
+
     try:
         server = ThreadingHTTPServer((config["host"], config["port"]), BridgeHandler)
     except OSError:
-        # Never leave a warm Sony connection orphaned if startup fails (e.g.
-        # the port is still held by a previous instance); the next restart
-        # attempt would otherwise be blocked by this process's own camera link.
-        for controller in CAMERA_CONTROLLERS.values():
+        with CAMERA_CONTROLLERS_LOCK:
+            controllers = list(CAMERA_CONTROLLERS.values())
+        for controller in controllers:
             controller.stop()
         raise
+
     Thread(target=watch_v4_completion_email, args=(config,), daemon=True).start()
+    Thread(
+        target=initialize_cameras,
+        args=(config, not args.background_service),
+        daemon=True,
+    ).start()
     print(f"FX30 bridge listening on http://{config['host']}:{config['port']}")
-    if warm_results and all(warm_results) and not args.background_service:
-        obs_path = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        subprocess.Popen(
-            [
-                "/usr/bin/open",
-                "--env",
-                f"PATH={obs_path}",
-                "-b",
-                "com.obsproject.obs-studio",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        open_dashboard(config)
-    elif warm_results and all(warm_results):
-        print("FX30 background service ready; OBS and browser launch suppressed.")
-    else:
-        print("FX30 dashboard not opened because the camera warm connection is not ready.")
     try:
         server.serve_forever()
     finally:
-        for controller in CAMERA_CONTROLLERS.values():
+        with CAMERA_CONTROLLERS_LOCK:
+            controllers = list(CAMERA_CONTROLLERS.values())
+        for controller in controllers:
             controller.stop()
 
 

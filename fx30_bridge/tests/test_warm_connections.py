@@ -1,7 +1,9 @@
 import unittest
+from threading import Event, Thread
 from unittest.mock import MagicMock, patch
 
 import bridge
+import cleanup_manager
 
 
 class WarmConnectionTests(unittest.TestCase):
@@ -71,6 +73,148 @@ class WarmConnectionTests(unittest.TestCase):
         self.assertFalse(results[0]["ok"])
         warm_controller_for.assert_not_called()
 
+    @patch("bridge.warm_controller_for")
+    @patch("bridge.enabled_cameras")
+    def test_warm_enabled_cameras_starts_all_cameras_concurrently(
+        self,
+        enabled_cameras,
+        warm_controller_for,
+    ):
+        cameras = [{"id": camera_id} for camera_id in ("fx30-a", "fx30-b", "fx30-c")]
+        enabled_cameras.return_value = cameras
+        entered = []
+        all_entered = Event()
+        release = Event()
+
+        def controller_for(camera):
+            controller = MagicMock()
+
+            def start(_timeout_seconds):
+                entered.append(camera["id"])
+                if len(entered) == len(cameras):
+                    all_entered.set()
+                release.wait(1)
+                return True
+
+            controller.start.side_effect = start
+            return controller
+
+        warm_controller_for.side_effect = controller_for
+        result_holder = {}
+        worker = Thread(
+            target=lambda: result_holder.setdefault(
+                "results", bridge.warm_enabled_cameras({}, probe_status=False)
+            )
+        )
+        worker.start()
+        try:
+            self.assertTrue(all_entered.wait(1))
+        finally:
+            release.set()
+        worker.join(1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertCountEqual(entered, ["fx30-a", "fx30-b", "fx30-c"])
+        self.assertEqual(
+            [result["id"] for result in result_holder["results"]],
+            ["fx30-a", "fx30-b", "fx30-c"],
+        )
+
+    @patch("bridge.warm_controller_for")
+    @patch("bridge.enabled_cameras")
+    def test_warm_enabled_cameras_keeps_configured_result_order(
+        self,
+        enabled_cameras,
+        warm_controller_for,
+    ):
+        cameras = [{"id": camera_id} for camera_id in ("fx30-a", "fx30-b", "fx30-c")]
+        enabled_cameras.return_value = cameras
+        camera_c_finished = Event()
+        camera_b_finished = Event()
+        completed = []
+
+        def controller_for(camera):
+            controller = MagicMock()
+
+            def start(_timeout_seconds):
+                if camera["id"] == "fx30-a":
+                    camera_b_finished.wait(1)
+                elif camera["id"] == "fx30-b":
+                    camera_c_finished.wait(1)
+                completed.append(camera["id"])
+                if camera["id"] == "fx30-c":
+                    camera_c_finished.set()
+                elif camera["id"] == "fx30-b":
+                    camera_b_finished.set()
+                return True
+
+            controller.start.side_effect = start
+            return controller
+
+        warm_controller_for.side_effect = controller_for
+
+        results = bridge.warm_enabled_cameras({}, probe_status=False)
+
+        self.assertEqual(completed, ["fx30-c", "fx30-b", "fx30-a"])
+        self.assertEqual(
+            [result["id"] for result in results],
+            ["fx30-a", "fx30-b", "fx30-c"],
+        )
+
+    @patch("bridge.warm_controller_for")
+    @patch("bridge.enabled_cameras")
+    def test_warm_enabled_cameras_isolates_worker_failure(
+        self,
+        enabled_cameras,
+        warm_controller_for,
+    ):
+        cameras = [{"id": camera_id} for camera_id in ("fx30-a", "fx30-b", "fx30-c")]
+        enabled_cameras.return_value = cameras
+        controllers = {}
+
+        def controller_for(camera):
+            controller = MagicMock()
+            if camera["id"] == "fx30-b":
+                controller.start.side_effect = RuntimeError("camera unavailable")
+            else:
+                controller.start.return_value = True
+            controllers[camera["id"]] = controller
+            return controller
+
+        warm_controller_for.side_effect = controller_for
+
+        results = bridge.warm_enabled_cameras({}, probe_status=False)
+
+        self.assertTrue(results[0]["ok"])
+        self.assertFalse(results[1]["ok"])
+        self.assertIn("camera unavailable", results[1]["error"])
+        self.assertTrue(results[2]["ok"])
+        for controller in controllers.values():
+            controller.start.assert_called_once_with(90)
+
+    @patch("bridge.warm_controller_for")
+    @patch("bridge.enabled_cameras")
+    def test_warm_enabled_cameras_does_not_submit_disabled_camera(
+        self,
+        enabled_cameras,
+        warm_controller_for,
+    ):
+        enabled_cameras.return_value = [
+            {"id": "fx30-a", "warmConnection": False},
+            {"id": "fx30-b", "warmConnection": True},
+        ]
+        controller = MagicMock()
+        controller.start.return_value = True
+        warm_controller_for.return_value = controller
+
+        results = bridge.warm_enabled_cameras({}, probe_status=False)
+
+        self.assertFalse(results[0]["ok"])
+        self.assertFalse(results[0]["warmConnection"])
+        self.assertTrue(results[1]["ok"])
+        warm_controller_for.assert_called_once_with({"id": "fx30-b", "warmConnection": True})
+        controller.start.assert_called_once_with(90)
+
     @patch("bridge.json_response")
     @patch("bridge.ensure_warm_controllers")
     def test_warm_endpoint_refuses_while_recording(
@@ -105,6 +249,41 @@ class WarmConnectionTests(unittest.TestCase):
 
         self.assertEqual(json_response.call_args.args[1], 200)
         self.assertTrue(json_response.call_args.args[2]["ok"])
+
+    @patch("bridge.json_response")
+    def test_warm_endpoint_refuses_while_another_warm_batch_is_running(self, json_response):
+        handler = object.__new__(bridge.BridgeHandler)
+        handler.config = {}
+        bridge.WARM_BATCH_LOCK.acquire()
+        try:
+            handler.handle_warm_connections()
+        finally:
+            bridge.WARM_BATCH_LOCK.release()
+
+        self.assertEqual(json_response.call_args.args[1], 409)
+        self.assertEqual(json_response.call_args.args[2]["error"], "Warm reconnect already in progress")
+
+    @patch("bridge.json_response")
+    @patch("bridge.ensure_warm_controllers")
+    def test_warm_endpoint_refuses_while_record_action_or_ingest_is_running(
+        self,
+        ensure_warm_controllers,
+        json_response,
+    ):
+        handler = object.__new__(bridge.BridgeHandler)
+        handler.config = {}
+        for state_key in ("record_action_running", "ingest_running"):
+            with self.subTest(state_key=state_key):
+                with bridge.STATE_LOCK:
+                    bridge.STATE[state_key] = True
+                handler.handle_warm_connections()
+                with bridge.STATE_LOCK:
+                    bridge.STATE[state_key] = False
+
+        ensure_warm_controllers.assert_not_called()
+        self.assertEqual(json_response.call_count, 2)
+        for call in json_response.call_args_list:
+            self.assertEqual(call.args[1], 409)
 
     @patch("bridge.schedule_auto_ingest_after_stop", return_value=False)
     @patch("bridge.start_native_ftp_ingest", return_value=False)
@@ -155,6 +334,71 @@ class WarmConnectionTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(controller._wait_for_prefix.call_count, 2)
         self.assertEqual(popen.call_count, 2)
+
+    @patch("bridge.WarmCameraController._assert_identity", return_value=True)
+    @patch("bridge.subprocess.Popen")
+    @patch("bridge.os.close")
+    @patch("bridge.pty.openpty", return_value=(10, 11))
+    def test_overlapping_starts_launch_one_helper(
+        self,
+        _openpty,
+        _close,
+        popen,
+        _assert_identity,
+    ):
+        controller = bridge.WarmCameraController({
+            "id": "fx30-a",
+            "mac": "78:F5:05:44:97:0E",
+            "statusCommand": ["/usr/bin/true"],
+        })
+        proc = MagicMock()
+        proc.poll.return_value = None
+        popen.return_value = proc
+        entered = Event()
+        release = Event()
+
+        def wait_for_ready(_prefix, _timeout_seconds):
+            entered.set()
+            release.wait(1)
+            return 'SONY_REC_READY {"mac": "78:F5:05:44:97:0E"}'
+
+        controller._wait_for_prefix = MagicMock(side_effect=wait_for_ready)
+        controller._read_stdout = MagicMock()
+        first = Thread(target=controller.start, args=(12,))
+        second = Thread(target=controller.start, args=(12,))
+        first.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            second.start()
+            self.assertEqual(popen.call_count, 1)
+        finally:
+            release.set()
+        first.join(1)
+        second.join(1)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(popen.call_count, 1)
+
+    @patch("bridge.os.close")
+    @patch("bridge.os.write")
+    def test_warm_stop_terminates_and_reaps_unresponsive_helper(self, _write, _close):
+        controller = bridge.WarmCameraController({"id": "fx30-a"})
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = [
+            bridge.subprocess.TimeoutExpired("sony-rec", 1),
+            None,
+        ]
+        controller.proc = proc
+        controller.terminal_fd = 10
+
+        controller.stop()
+
+        proc.terminate.assert_called_once()
+        self.assertEqual(proc.wait.call_count, 2)
+        self.assertIsNone(controller.proc)
+        self.assertIsNone(controller.terminal_fd)
 
     @patch("bridge.warm_controller_for")
     def test_failed_warm_action_does_not_start_competing_one_shot_command(
