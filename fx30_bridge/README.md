@@ -38,7 +38,7 @@ actual US studio lights; use the measured result to decide whether 30.00 or
 The current one-camera mitigation records the normal OBS program output at
 3840x2160 HEVC instead of creating a redundant Source Record output. Audio
 Stems Recorder writes its WAV sessions under
-`/Volumes/Extreme SSD/TEST-RECS/OBS-MASTERS/AUDIO-STEMS`. The launcher supplies
+`/Users/podcaststudio/Documents/OBS_MASTERS/AUDIO-STEMS`. The launcher supplies
 `/opt/homebrew/bin` in OBS's `PATH` so the plugin can run FFmpeg and finish its
 configured 24-bit conversion.
 
@@ -131,7 +131,7 @@ locations:
 
 ```text
 RØDECaster card
-  -> /Volumes/Extreme SSD/TEST-RECS/AUDIO/RODECASTER
+   -> /Users/podcaststudio/Documents/RODECASTER_AUDIO
   -> /Volumes/specialized2026/studio/Studio Recordings/RØDECaster Audio
 ```
 
@@ -188,7 +188,7 @@ loads this file only at startup.
 
 The dashboard has separate **EMERGENCY: CAMERA 1/2/3 MASTER** buttons for an NDI
 master failure. Each button pulls only the selected camera's newest 4K master
-into that camera's local Extreme SSD folder. Disabled cameras remain visibly
+into that camera's local Mac ingest folder. Disabled cameras remain visibly
 unavailable. Recovery is deliberately separate from normal stop, proxy copy,
 LucidLink delivery, and email. It never runs automatically.
 
@@ -198,14 +198,14 @@ The action:
 2. releases the warm Sony control connection and enters Contents Transfer mode;
 3. selects the newest 3840x2160 non-proxy movie and refuses an HD proxy
    substitute;
-4. copies it into the configured `masterIngestFolder` on the Extreme SSD;
+4. copies it into the configured `masterIngestFolder` in the Mac recording workspace;
 5. verifies non-zero duration, 3840x2160 resolution, size, and SHA-256;
 6. leaves the camera-card original in place and restores the warm connection.
 
 Current one-camera test destination:
 
 ```text
-/Volumes/Extreme SSD/FX30-EMERGENCY-MASTERS-2026-08-13/FX30_A
+/Users/podcaststudio/Documents/CAMERA BACK UP INGEST/CAMERA 1
 ```
 
 Live proof on 13 August 2026 recovered `C2008.MP4`: 11.04 seconds,
@@ -279,7 +279,7 @@ For a camera-card capacity button, first press **Refresh card status** in the da
 
 The dashboard's **FORMAT SLOT** control is deliberately a recovery-only action: it is blocked during recording/copying, requires every tracked proxy backup to be size-verified both on the SSD and in LucidLink, requires Sony to report full format as available, and requires two exact typed acknowledgements. It does not prove that the high-resolution originals were manually copied; that remains a deliberate human confirmation immediately before formatting.
 
-Stable files in `/Volumes/Extreme SSD/TEST-RECS/OBS-MASTERS` are also copied into the LucidLink `OBS-MASTERS` folder during `COPY FILES`. Existing same-size files are skipped safely.
+Stable files in `/Users/podcaststudio/Documents/OBS_MASTERS` are also copied into the LucidLink `OBS-MASTERS` folder during `COPY FILES`. Existing same-size files are skipped safely.
 
 ### Companion Ready button
 
@@ -393,6 +393,17 @@ Unable to set the value of variable $(custom:undefined)
 
 that is a Companion button/variable action issue, not the FX30 bridge itself. Remove any action that tries to write to `$(custom:undefined)`.
 
+## ARM Failures (CAMERA WARM, CHECK ARM, 4K check)
+
+ARM writes a log you can read when it fails: `~/Library/Logs/StudioOS/companion-arm-fx30.log`. The packaged check writes its own reasons to `/private/tmp/strict_studio_arm_v4_local.log`.
+
+- `fx30-x: Enumeration of device information failed` - the Sony SDK could not discover the camera by multicast. `sony-rec` connects by IP and MAC instead; make sure each camera has an `ip` in `config.json` and still has that address.
+- `ARM RETRY n: ... Just In ...` - Just In's API on port 8080 stopped answering; ARM restarts Just In and retries up to 3 times.
+- `ZOWIE n: 4K FIXED` on every ARM - that Zowie box keeps reverting. Set its Video Input EDID to 4K30 on the box web page.
+- `ZOWIE n: CHECK CONNECTION` - the box could not be reached within 90 seconds.
+
+See `FX30_HANDOVER.md` for the full 2026-10-09 notes.
+
 ## Setup
 
 ```text
@@ -420,9 +431,9 @@ When an ingest finishes, the bridge also sends a macOS notification such as `FX3
 The studio config uses the external SSD as the camera ingest landing folder:
 
 ```text
-/Volumes/Extreme SSD/TEST-RECS/FX30_A
-/Volumes/Extreme SSD/TEST-RECS/FX30_B
-/Volumes/Extreme SSD/TEST-RECS/FX30_C
+/Users/podcaststudio/Documents/CAMERA BACK UP INGEST/CAMERA 1
+/Users/podcaststudio/Documents/CAMERA BACK UP INGEST/CAMERA 2
+/Users/podcaststudio/Documents/CAMERA BACK UP INGEST/CAMERA 3
 ```
 
 After the Sony SDK copy finishes, the bridge copies the completed file into LucidLink:

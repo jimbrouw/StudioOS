@@ -1,4 +1,4 @@
-// SonyRec.cpp — StudioOS FX30 camera control CLI (recording-only MVP).
+// SonyRec.cpp — StudioOS FX30 camera control and card-media CLI.
 //
 // Fixes the proven root cause: the previous binary connected to "whichever
 // FX30 the SDK enumerates first" because it never checked device identity.
@@ -7,10 +7,9 @@
 // no connect) if none match. It never falls back to the first enumerated
 // camera.
 //
-// Scope (deliberately reduced to ship fast): status, start, stop, and the
-// --server warm protocol. ingest/proxy/format-card/delete-file/ftp-test are
-// NOT implemented here and always return a clear "unsupported in this MVP
-// build" error — they never touch card media.
+// Supported actions include record control, card status, proxy/master ingest,
+// guarded card format, exact-name deletion, and read-only FTP inspection.
+// Proxy setting inspection and mutation remain unsupported.
 //
 // CLI: sony-rec --camera <label> --mac <AA:BB:CC:DD:EE:FF> --action <action> [--server]
 // Actions: start | stop | status | card-status
@@ -25,7 +24,10 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstring>
+#include <cstdio>
 #include <cstdlib>
+#include <arpa/inet.h>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
@@ -83,11 +85,13 @@ void printResult(bool ok, const std::string& extraJsonFields, const std::string&
 struct Args {
     std::string cameraLabel;
     std::string mac;
+    std::string ip;
     std::string action;
     std::string destination;
     std::string filename;
     int slot = 0;
     bool confirmFormat = false;
+    bool inspectOnly = false;
     bool server = false;
 };
 
@@ -100,6 +104,7 @@ bool parseArgs(int argc, char** argv, Args& out, std::string& err) {
         };
         if (a == "--camera") out.cameraLabel = next("--camera");
         else if (a == "--mac") out.mac = next("--mac");
+        else if (a == "--ip") out.ip = next("--ip");
         else if (a == "--action") out.action = next("--action");
         else if (a == "--dest") out.destination = next("--dest");
         else if (a == "--filename") out.filename = next("--filename");
@@ -113,6 +118,7 @@ bool parseArgs(int argc, char** argv, Args& out, std::string& err) {
             }
         }
         else if (a == "--confirm-format") out.confirmFormat = true;
+        else if (a == "--inspect-only") out.inspectOnly = true;
         else if (a == "--server") out.server = true;
         if (!err.empty()) return false;
     }
@@ -130,6 +136,8 @@ public:
     bool transferOk = false;
     CrInt32u transferPercent = 0;
     std::string transferFilename;
+    bool contentsTransferFinished = false;
+    bool contentsTransferOk = false;
     bool formatFinished = false;
     bool formatOk = false;
 
@@ -157,6 +165,19 @@ public:
                    notify == SDK::CrNotify_RemoteTransfer_Result_DeviceBusy) {
             transferOk = false;
             transferFinished = true;
+        }
+        cv.notify_all();
+    }
+
+    void OnNotifyContentsTransfer(CrInt32u notify, SDK::CrContentHandle, CrChar* filename) override {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (filename) transferFilename = filename;
+        if (notify == SDK::CrNotify_ContentsTransfer_Complete) {
+            contentsTransferOk = true;
+            contentsTransferFinished = true;
+        } else if (notify != SDK::CrNotify_ContentsTransfer_Start) {
+            contentsTransferOk = false;
+            contentsTransferFinished = true;
         }
         cv.notify_all();
     }
@@ -189,6 +210,10 @@ std::string recordingStateToString(CrInt64u state) {
     return (state == SDK::CrMovie_Recording_State_Recording) ? "recording" : "not_recording";
 }
 
+bool isIngestAction(const std::string& action) {
+    return action == "ingest-new" || action == "ingest-master" || action == "ingest-proxy";
+}
+
 // Enumerates every camera the SDK can currently see and returns the index of
 // the one whose MAC matches `wantMacNorm`. Never guesses; returns -1 if there
 // is no exact match, with every enumerated MAC captured for a clear error.
@@ -216,6 +241,42 @@ struct ConnectResult {
     std::string matchedMac;
 };
 
+
+// Looks up the IPv4 address of a MAC in the system ARP table, so the camera can
+// be reached directly when multicast discovery is blocked on this Mac.
+std::string ipFromArpTable(const std::string& wantMacNorm) {
+    FILE* pipe = popen("/usr/sbin/arp -an 2>/dev/null", "r");
+    if (!pipe) return "";
+    std::string found;
+    char line[512];
+    while (fgets(line, sizeof(line), pipe)) {
+        std::string l(line);
+        auto open = l.find('('), close = l.find(')');
+        auto at = l.find(" at ");
+        if (open == std::string::npos || close == std::string::npos || at == std::string::npos) continue;
+        std::string ip = l.substr(open + 1, close - open - 1);
+        std::istringstream rest(l.substr(at + 4));
+        std::string macText;
+        rest >> macText;
+        std::string norm;
+        std::istringstream octets(macText);
+        std::string octet;
+        while (std::getline(octets, octet, ':')) {
+            if (octet.size() == 1) octet = "0" + octet;
+            norm += normalizeMac(octet);
+        }
+        if (norm == wantMacNorm) { found = ip; break; }
+    }
+    pclose(pipe);
+    return found;
+}
+
+bool macBytes(const std::string& macNorm, CrInt8u out[6]) {
+    if (macNorm.size() != 12) return false;
+    for (int i = 0; i < 6; ++i) out[i] = (CrInt8u)std::stoi(macNorm.substr(i * 2, 2), nullptr, 16);
+    return true;
+}
+
 ConnectResult connectByIdentity(Callback& cb, const Args& args) {
     ConnectResult result;
 
@@ -226,37 +287,61 @@ ConnectResult connectByIdentity(Callback& cb, const Args& args) {
     const std::string wantMac = normalizeMac(args.mac);
 
     SDK::ICrEnumCameraObjectInfo* list = nullptr;
-    auto enumStatus = SDK::EnumCameraObjects(&list, 3);
-    if (CR_FAILED(enumStatus) || list == nullptr) {
-        result.error = "Enumeration of device information failed";
-        return result;
-    }
+    SDK::ICrCameraObjectInfo* directInfo = nullptr;
+    SDK::ICrCameraObjectInfo* cameraInfo = nullptr;
 
-    std::vector<std::string> enumeratedMacs;
-    int idx = findMatchingCameraIndex(list, wantMac, enumeratedMacs);
-    if (idx < 0) {
-        std::ostringstream oss;
-        oss << "Requested camera " << args.cameraLabel << " (mac " << args.mac << ") not found among "
-            << list->GetCount() << " enumerated cameras. Seen: ";
-        for (size_t i = 0; i < enumeratedMacs.size(); ++i) {
-            if (i) oss << ", ";
-            oss << enumeratedMacs[i];
+    // Direct connect by IP + MAC first: multicast discovery can be blocked by
+    // endpoint security software, while the identity is still pinned to the MAC.
+    std::string ipText = args.ip.empty() ? ipFromArpTable(wantMac) : args.ip;
+    CrInt8u mac[6];
+    in_addr addr{};
+    if (!ipText.empty() && macBytes(wantMac, mac) && inet_pton(AF_INET, ipText.c_str(), &addr) == 1) {
+        auto createStatus = SDK::CreateCameraObjectInfoEthernetConnection(
+            &directInfo, SDK::CrCameraDeviceModel_ILME_FX30, (CrInt32u)addr.s_addr, mac, 0);
+        if (CR_SUCCEEDED(createStatus) && directInfo) {
+            cameraInfo = directInfo;
+            result.matchedMac = args.mac;
+        } else {
+            directInfo = nullptr;
         }
-        result.error = oss.str();
-        list->Release();
-        return result;
     }
 
-    auto* cameraInfo = const_cast<SDK::ICrCameraObjectInfo*>(list->GetCameraObjectInfo(idx));
-    result.matchedMac = args.mac;
+    if (!cameraInfo) {
+        auto enumStatus = SDK::EnumCameraObjects(&list, 3);
+        if (CR_FAILED(enumStatus) || list == nullptr) {
+            result.error = "Enumeration of device information failed";
+            return result;
+        }
+
+        std::vector<std::string> enumeratedMacs;
+        int idx = findMatchingCameraIndex(list, wantMac, enumeratedMacs);
+        if (idx < 0) {
+            std::ostringstream oss;
+            oss << "Requested camera " << args.cameraLabel << " (mac " << args.mac << ") not found among "
+                << list->GetCount() << " enumerated cameras. Seen: ";
+            for (size_t i = 0; i < enumeratedMacs.size(); ++i) {
+                if (i) oss << ", ";
+                oss << enumeratedMacs[i];
+            }
+            result.error = oss.str();
+            list->Release();
+            return result;
+        }
+        cameraInfo = const_cast<SDK::ICrCameraObjectInfo*>(list->GetCameraObjectInfo(idx));
+        result.matchedMac = args.mac;
+    }
 
     // Whether Access Authentication is required is only knowable for certain
     // once Connect() itself reports it; there is no reliable "is a password
     // required" getter on ICrCameraObjectInfo.
     const char* password = std::getenv("SONY_REC_PASSWORD");
-    auto connectStatus = SDK::Connect(cameraInfo, &cb, &result.handle, SDK::CrSdkControlMode_Remote,
+    const auto controlMode = isIngestAction(args.action)
+        ? SDK::CrSdkControlMode_ContentsTransfer
+        : SDK::CrSdkControlMode_Remote;
+    auto connectStatus = SDK::Connect(cameraInfo, &cb, &result.handle, controlMode,
                                        SDK::CrReconnecting_ON, "admin", password ? password : "", "", 0);
-    list->Release();
+    if (list) list->Release();
+    if (directInfo) directInfo->Release();
     if (CR_FAILED(connectStatus)) {
         std::ostringstream oss;
         oss << "Failed to connect: 0x" << std::hex << connectStatus;
@@ -360,6 +445,145 @@ struct TransferCandidate {
     CaptureKey captured{};
 };
 
+struct MtpMovieCandidate {
+    SDK::CrContentHandle handle = 0;
+    CrInt64u fileSize = 0;
+    CrInt32u width = 0;
+    CrInt32u height = 0;
+    std::string filename;
+    std::string captured;
+};
+
+bool isMovieFilename(const std::string& filename) {
+    std::string lower;
+    lower.reserve(filename.size());
+    for (char c : filename) lower.push_back((char)std::tolower((unsigned char)c));
+    for (const std::string extension : {".mp4", ".mxf", ".mts", ".mov"}) {
+        if (lower.size() >= extension.size() &&
+            lower.compare(lower.size() - extension.size(), extension.size(), extension) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+ActionOutcome doMtpMasterIngest(SDK::CrDeviceHandle handle, Callback& callback, const Args& args) {
+    ActionOutcome out;
+    bool transferReady = false;
+    for (int attempt = 0; attempt < 60 && !transferReady; ++attempt) {
+        CrInt64u status = 0;
+        transferReady = readProperty(handle, SDK::CrDeviceProperty_ContentsTransferStatus, status) &&
+                        status == SDK::CrContentsTransfer_ON;
+        if (!transferReady) std::this_thread::sleep_for(500ms);
+    }
+    if (!transferReady) {
+        out.error = "Sony Contents Transfer mode did not become ready";
+        return out;
+    }
+
+    SDK::CrMtpFolderInfo* folders = nullptr;
+    CrInt32u folderCount = 0;
+    if (CR_FAILED(SDK::GetDateFolderList(handle, &folders, &folderCount)) || !folders) {
+        out.error = "Sony returned no contents folders";
+        return out;
+    }
+
+    std::vector<MtpMovieCandidate> movies;
+    for (CrInt32u folderIndex = 0; folderIndex < folderCount; ++folderIndex) {
+        SDK::CrContentHandle* contentHandles = nullptr;
+        CrInt32u contentCount = 0;
+        if (CR_FAILED(SDK::GetContentsHandleList(
+                handle, folders[folderIndex].handle, &contentHandles, &contentCount)) || !contentHandles) {
+            continue;
+        }
+        for (CrInt32u contentIndex = 0; contentIndex < contentCount; ++contentIndex) {
+            SDK::CrMtpContentsInfo content;
+            if (CR_FAILED(SDK::GetContentsDetailInfo(handle, contentHandles[contentIndex], &content))) continue;
+            std::string filename;
+            if (content.fileName && content.fileNameSize > 0) {
+                filename.assign(reinterpret_cast<const char*>(content.fileName), content.fileNameSize);
+                const size_t nullPosition = filename.find('\0');
+                if (nullPosition != std::string::npos) filename.resize(nullPosition);
+            }
+            if (!isMovieFilename(filename)) continue;
+            const size_t dateLength = strnlen(
+                reinterpret_cast<const char*>(content.dateChar), sizeof(content.dateChar));
+            movies.push_back({content.handle, content.contentSize, content.width, content.height,
+                              filename, std::string(reinterpret_cast<const char*>(content.dateChar), dateLength)});
+        }
+        SDK::ReleaseContentsHandleList(handle, contentHandles);
+    }
+    SDK::ReleaseDateFolderList(handle, folders);
+
+    if (movies.empty()) {
+        out.error = "Sony returned no movie files in Contents Transfer mode";
+        return out;
+    }
+    std::string newestDate;
+    for (const auto& movie : movies) {
+        if (movie.captured > newestDate) newestDate = movie.captured;
+    }
+    const MtpMovieCandidate* selected = nullptr;
+    for (const auto& movie : movies) {
+        if (movie.captured != newestDate || movie.width < 3840 || movie.height < 2160) continue;
+        const CrInt64u pixels = static_cast<CrInt64u>(movie.width) * movie.height;
+        const CrInt64u selectedPixels = selected
+            ? static_cast<CrInt64u>(selected->width) * selected->height
+            : 0;
+        if (!selected || pixels > selectedPixels ||
+            (pixels == selectedPixels && movie.fileSize > selected->fileSize)) {
+            selected = &movie;
+        }
+    }
+    if (!selected) {
+        out.error = "No safe 4K master was found for the newest camera recording";
+        return out;
+    }
+    if (args.inspectOnly) {
+        out.ok = true;
+        out.extraJson = "\"fileName\":\"" + jsonEscape(selected->filename) +
+                        "\",\"sizeBytes\":" + std::to_string(selected->fileSize) +
+                        ",\"width\":" + std::to_string(selected->width) +
+                        ",\"height\":" + std::to_string(selected->height) +
+                        ",\"inspectOnly\":true";
+        return out;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(callback.mtx);
+        callback.contentsTransferFinished = false;
+        callback.contentsTransferOk = false;
+        callback.transferFilename.clear();
+    }
+    std::string destination = args.destination;
+    std::string filename = selected->filename;
+    const auto transferStatus = SDK::PullContentsFile(
+        handle, selected->handle, SDK::CrPropertyStillImageTransSize_Original,
+        destination.data(), filename.data());
+    if (CR_FAILED(transferStatus)) {
+        out.error = "Sony rejected the 4K master download request";
+        return out;
+    }
+
+    std::unique_lock<std::mutex> lock(callback.mtx);
+    const bool completed = callback.cv.wait_for(lock, 30min, [&callback] {
+        return callback.contentsTransferFinished || callback.disconnected.load();
+    });
+    if (!completed || !callback.contentsTransferOk) {
+        out.error = completed ? "Camera reported that the 4K master download failed"
+                              : "Camera transfer timed out after 30 minutes";
+        return out;
+    }
+
+    const std::filesystem::path downloaded = std::filesystem::path(args.destination) / selected->filename;
+    out.ok = true;
+    out.extraJson = "\"file\":\"" + jsonEscape(downloaded.string()) +
+                    "\",\"fileName\":\"" + jsonEscape(selected->filename) +
+                    "\",\"sizeBytes\":" + std::to_string(selected->fileSize);
+    flushLine("File: " + downloaded.string());
+    return out;
+}
+
 ActionOutcome doIngest(SDK::CrDeviceHandle handle, Callback& callback, const Args& args, bool proxy) {
     ActionOutcome out;
     if (args.destination.empty()) {
@@ -373,6 +597,7 @@ ActionOutcome doIngest(SDK::CrDeviceHandle handle, Callback& callback, const Arg
         out.error = "Could not create destination: " + directoryError.message();
         return out;
     }
+    if (!proxy) return doMtpMasterIngest(handle, callback, args);
 
     TransferCandidate newest;
     for (const auto slot : {SDK::CrSlotNumber_Slot1, SDK::CrSlotNumber_Slot2}) {
@@ -614,7 +839,7 @@ ActionOutcome doFtpTest(SDK::CrDeviceHandle handle) {
 
 ActionOutcome unsupported(const std::string& action) {
     ActionOutcome out;
-    out.error = action + " is not implemented in this MVP build; ingest/format/delete stay manual until the full rebuild.";
+    out.error = action + " is not implemented in this build.";
     return out;
 }
 

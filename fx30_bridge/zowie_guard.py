@@ -89,13 +89,19 @@ def _read_encoders(host, session_uuid, timeout_seconds):
 
 
 def _write_encoders(host, session_uuid, encoders, timeout_seconds):
-    _post(
+    # Only the Main Stream is written. Zowie rejects the whole save when the
+    # sub-stream's keyinterval is below 20, yet still returns status 00000, so
+    # the textual "rsp" must be checked too.
+    response = _post(
         host,
         "/video?option=setinfo",
-        {"group": "venc", "venc": encoders},
+        {"group": "venc", "venc": encoders[:1]},
         timeout_seconds,
         session_uuid,
     )
+    rsp = str(response.get("rsp", "")).strip()
+    if rsp and rsp.lower() != "succeed":
+        raise ZowieGuardError(f"{host} rejected the encoder change: {rsp}")
 
 
 def ensure_resolution(
@@ -111,10 +117,22 @@ def ensure_resolution(
     main_encoder = encoders[0]
     before = (int(main_encoder.get("width", 0)), int(main_encoder.get("height", 0)))
 
-    changed = before != (width, height)
+    # Zowie silently ignores a 4K change when a controlled stream's GOP
+    # exceeds its frame rate, then reports a generic success response. A GOP
+    # above the frame rate is also what lets the box fall back to HD later, so
+    # it is corrected even while the resolution is currently 4K.
+    gop_needs_fix = bool(
+        int(main_encoder.get("framerate", 0))
+        and int(main_encoder.get("gop", 0)) > int(main_encoder.get("framerate", 0))
+    )
+    changed = before != (width, height) or gop_needs_fix
     if changed:
         main_encoder["width"] = width
         main_encoder["height"] = height
+        for encoder in encoders[:2]:
+            frame_rate = int(encoder.get("framerate", 0))
+            if frame_rate and int(encoder.get("gop", 0)) > frame_rate:
+                encoder["gop"] = frame_rate
         _write_encoders(host, session_uuid, encoders, timeout_seconds)
 
     verified_encoders = _read_encoders(host, session_uuid, timeout_seconds)
@@ -126,6 +144,18 @@ def ensure_resolution(
         )
 
     return {"host": host, "before": before, "after": after, "changed": changed}
+
+
+def verify_resolution(host, username, password, width=3840, height=2160, timeout_seconds=5):
+    session_uuid = _login(host, username, password, timeout_seconds)
+    encoders = _read_encoders(host, session_uuid, timeout_seconds)
+    main_encoder = encoders[0]
+    resolution = (int(main_encoder.get("width", 0)), int(main_encoder.get("height", 0)))
+    if resolution != (width, height):
+        raise ZowieGuardError(
+            f"{host} Main Stream is {resolution[0]}x{resolution[1]}, expected {width}x{height}"
+        )
+    return {"host": host, "before": resolution, "after": resolution, "changed": False}
 
 
 def _configured_password(device):
@@ -156,7 +186,7 @@ def _configured_password(device):
     return ""
 
 
-def guard_configured_devices(config):
+def guard_configured_devices(config, verify_only=False):
     guard = config.get("zowieResolutionGuard") or {}
     if not guard.get("enabled", False):
         return []
@@ -166,6 +196,10 @@ def guard_configured_devices(config):
     timeout_seconds = float(guard.get("timeoutSeconds", 5))
     retry_seconds = float(guard.get("retrySeconds", 30))
     retry_interval = max(0.25, float(guard.get("retryIntervalSeconds", 2)))
+    stable_read_count = max(1, int(guard.get("stableReadCount", 1)))
+    stable_read_interval = max(
+        0.25, float(guard.get("stableReadIntervalSeconds", retry_interval))
+    )
     results = []
 
     for device in guard.get("devices", []):
@@ -184,9 +218,11 @@ def guard_configured_devices(config):
 
         deadline = time.monotonic() + retry_seconds
         last_error = None
+        consecutive_4k_reads = 0
         while True:
             try:
-                result = ensure_resolution(
+                check_resolution = verify_resolution if verify_only else ensure_resolution
+                result = check_resolution(
                     host,
                     username,
                     password,
@@ -194,11 +230,21 @@ def guard_configured_devices(config):
                     int(device.get("requiredHeight", default_height)),
                     timeout_seconds,
                 )
+                consecutive_4k_reads += 1
+                if consecutive_4k_reads < stable_read_count:
+                    if time.monotonic() >= deadline:
+                        raise ZowieGuardError(
+                            f"4K readback was not stable for {stable_read_count} consecutive checks"
+                        )
+                    time.sleep(stable_read_interval)
+                    continue
+                result["stableReadCount"] = consecutive_4k_reads
                 result["name"] = device.get("name") or host
                 results.append(result)
                 break
             except ZowieGuardError as exc:
                 last_error = exc
+                consecutive_4k_reads = 0
                 if time.monotonic() >= deadline:
                     raise ZowieGuardError(
                         f"{device.get('name') or host} did not become 4K-ready: {last_error}"
@@ -215,6 +261,7 @@ def main():
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--host")
     target.add_argument("--config")
+    parser.add_argument("--verify-only", action="store_true")
     parser.add_argument("--username", default="admin")
     parser.add_argument("--password-env", default="FX30_ZOWIE_A_PASSWORD")
     parser.add_argument("--width", type=int, default=3840)
@@ -226,7 +273,7 @@ def main():
         with open(args.config, "r", encoding="utf-8") as config_file:
             config = json.load(config_file)
         try:
-            results = guard_configured_devices(config)
+            results = guard_configured_devices(config, verify_only=args.verify_only)
         except (OSError, ValueError, ZowieGuardError) as exc:
             print(f"ZOWIE CHECK FAILED: {exc}", file=os.sys.stderr)
             return 1

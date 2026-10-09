@@ -248,7 +248,10 @@ def json_response(handler, status, payload):
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(data)))
     handler.end_headers()
-    handler.wfile.write(data)
+    try:
+        handler.wfile.write(data)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
 
 
 def html_response(handler, status, html):
@@ -618,6 +621,46 @@ DASHBOARD_HTML = """<!doctype html>
     .pill.ok { color: var(--green); background: rgba(36, 138, 61, .13); }
     .pill.bad { color: var(--red); background: rgba(215, 0, 21, .12); }
     .pill.busy { color: var(--amber); background: rgba(178, 80, 0, .12); }
+        .studioDialogBackdrop {
+            position: fixed;
+            inset: 0;
+            z-index: 1000;
+            display: grid;
+            place-items: center;
+            padding: 20px;
+            background: rgba(20, 24, 28, .54);
+            backdrop-filter: blur(3px);
+        }
+        .studioDialogBackdrop[hidden] { display: none; }
+        .studioDialog {
+            width: min(500px, 100%);
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            background: var(--panel);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, .25);
+            padding: 22px;
+        }
+        .studioDialog h2 { margin-bottom: 8px; }
+        .studioDialogMessage { margin: 0; color: var(--muted); white-space: pre-line; }
+        .studioDialogInput {
+            width: 100%;
+            min-height: 40px;
+            margin-top: 16px;
+            border: 1px solid var(--line);
+            border-radius: 7px;
+            padding: 8px 10px;
+            background: var(--control);
+            color: var(--text);
+            font: inherit;
+        }
+        .studioDialogActions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        .studioDialogActions button { min-width: 96px; }
+        .studioDialogConfirm.destructive { border-color: var(--red); background: var(--red); color: white; }
     .muted { color: var(--muted); }
     .files {
       display: grid;
@@ -846,9 +889,9 @@ DASHBOARD_HTML = """<!doctype html>
           <h2 style="margin-bottom:4px;">Camera-card capacity &amp; last-resort format</h2>
           <p class="muted" style="margin:0; font-size:14px;">Sony reports remaining recording time for the active format. It does not expose trustworthy free GB. Format is blocked until tracked backups are verified on SSD and LucidLink, then still requires manual high-res confirmation.</p>
         </div>
-        <button type="button" id="refreshCards" style="min-height:38px; padding:6px 14px; background:#244c78;">Refresh card status</button>
+                <button type="button" id="refreshCards" style="min-height:38px; padding:6px 14px; background:#244c78;">CHECK CARDS / FORMAT</button>
       </div>
-      <div id="cardStatus"><div class="muted" style="padding:8px 0;">Press Refresh card status. Status pauses while recording or copying so the probe cannot interrupt the camera.</div></div>
+            <div id="cardStatus"><div class="muted" style="padding:8px 0;">Press CHECK CARDS / FORMAT to show capacity and available format controls for each camera. Status pauses while recording or copying so the probe cannot interrupt the camera.</div></div>
     </section>
 
     <section class="panel" style="margin-top: 16px;">
@@ -870,9 +913,26 @@ DASHBOARD_HTML = """<!doctype html>
     </section>
   </main>
 
-  <script>
+    <div class="studioDialogBackdrop" id="studioDialogBackdrop" hidden>
+        <section class="studioDialog" role="dialog" aria-modal="true" aria-labelledby="studioDialogTitle" aria-describedby="studioDialogMessage">
+            <h2 id="studioDialogTitle">Confirm action</h2>
+            <p class="studioDialogMessage" id="studioDialogMessage"></p>
+            <input class="studioDialogInput" id="studioDialogInput" type="text" autocomplete="off" spellcheck="false" hidden>
+            <div class="studioDialogActions">
+                <button type="button" id="studioDialogCancel">Cancel</button>
+                <button type="button" class="studioDialogConfirm" id="studioDialogConfirm">Continue</button>
+            </div>
+        </section>
+    </div>
+
+    <script>
     window.onerror = function(msg, url, line, col, error) {
-      alert("JavaScript Error:" + "\\n" + msg + "\\n\\nFile: " + url + "\\nLine: " + line + "\\nColumn: " + col + "\\nStack:\\n" + (error ? error.stack : "N/A"));
+            console.error("JavaScript Error:", msg, url, line, col, error);
+            const errorNode = document.getElementById("error");
+            if (errorNode) {
+                errorNode.style.display = "block";
+                errorNode.textContent = `Page error: ${msg} (line ${line})`;
+            }
       return false;
     };
     const statusUrl = "/record/status";
@@ -882,6 +942,61 @@ DASHBOARD_HTML = """<!doctype html>
     let lastVisitorType = "Unknown";
     let actionRunning = false;
     let rodecasterArchiveReady = false;
+        let studioDialogResolve = null;
+
+        function closeStudioDialog(value) {
+            $("studioDialogBackdrop").hidden = true;
+            document.body.style.overflow = "";
+            if (studioDialogResolve) {
+                const resolve = studioDialogResolve;
+                studioDialogResolve = null;
+                resolve(value);
+            }
+        }
+
+        function showStudioDialog({ title, message, confirmLabel = "Continue", destructive = false, expectedText = null, cancel = true }) {
+            const input = $("studioDialogInput");
+            const confirmButton = $("studioDialogConfirm");
+            $("studioDialogTitle").textContent = title;
+            $("studioDialogMessage").textContent = message;
+            $("studioDialogCancel").hidden = !cancel;
+            confirmButton.textContent = confirmLabel;
+            confirmButton.classList.toggle("destructive", destructive);
+            input.hidden = expectedText === null;
+            input.value = "";
+            input.placeholder = expectedText === null ? "" : expectedText;
+            confirmButton.disabled = expectedText !== null;
+            input.oninput = () => {
+                confirmButton.disabled = input.value !== expectedText;
+            };
+            $("studioDialogBackdrop").hidden = false;
+            document.body.style.overflow = "hidden";
+            window.setTimeout(() => (expectedText === null ? confirmButton : input).focus(), 0);
+            return new Promise((resolve) => {
+                studioDialogResolve = resolve;
+            });
+        }
+
+        function studioConfirm(message, options = {}) {
+            return showStudioDialog({ title: "Confirm action", ...options, message });
+        }
+
+        function studioPrompt(message, expectedText) {
+            return showStudioDialog({ title: "Safety confirmation", message, confirmLabel: "Confirm", destructive: true, expectedText });
+        }
+
+        function studioAlert(message, title = "StudioOS") {
+            return showStudioDialog({ title, message, confirmLabel: "OK", cancel: false });
+        }
+
+        $("studioDialogCancel").addEventListener("click", () => closeStudioDialog(false));
+        $("studioDialogConfirm").addEventListener("click", () => {
+            const input = $("studioDialogInput");
+            closeStudioDialog(input.hidden ? true : input.value);
+        });
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape" && !$("studioDialogBackdrop").hidden) closeStudioDialog(false);
+        });
 
     function refreshDisabledStates() {
       const isRemote = lastVisitorType === "Remote (Tailscale)";
@@ -911,9 +1026,9 @@ DASHBOARD_HTML = """<!doctype html>
 
     const remoteControlEnable = $("remoteControlEnable");
     if (remoteControlEnable) {
-      remoteControlEnable.addEventListener("change", () => {
+            remoteControlEnable.addEventListener("change", async () => {
         if (remoteControlEnable.checked) {
-          if (!confirm("WARNING: You are about to enable control of the FX30 Studio from a remote connection.\\n\\nDo you want to proceed and assume control?")) {
+                    if (!await studioConfirm("You are about to enable control of the FX30 Studio from a remote connection.\\n\\nDo you want to proceed and assume control?", { title: "Remote control warning", confirmLabel: "Enable control", destructive: true })) {
             remoteControlEnable.checked = false;
           }
         }
@@ -1032,24 +1147,24 @@ DASHBOARD_HTML = """<!doctype html>
 
     async function postAction(action, cameraId = null) {
       if (action === "stop") {
-        if (!confirm("Are you sure you want to STOP all camera recordings?")) {
+                if (!await studioConfirm("Are you sure you want to stop all camera recordings?", { title: "Stop all cameras", confirmLabel: "Stop recordings", destructive: true })) {
           return;
         }
       } else if (action === "ingest") {
-        if (!confirm("Copy the newest camera proxy to the local Extreme SSD staging folder? Nothing will be sent to LucidLink or email.")) {
+                if (!await studioConfirm("Copy the newest camera proxy to the local staging folder? Nothing will be sent to LucidLink or email.", { title: "Copy camera proxy", confirmLabel: "Start copy" })) {
           return;
         }
       } else if (action === "deliver") {
-        if (!confirm("Copy the verified local SSD proxy to LucidLink?")) {
+                if (!await studioConfirm("Copy the verified local proxy to LucidLink?", { title: "Send to LucidLink", confirmLabel: "Start copy" })) {
           return;
         }
       } else if (action === "recover-master") {
         const cameraLabel = cameraId ? cameraId.toUpperCase() : "all enabled cameras";
-        if (!confirm(`EMERGENCY RECOVERY ONLY: Pull the newest 4K master from ${cameraLabel} to its Extreme SSD folder? This can take much longer than the proxy copy.`)) {
+                if (!await studioConfirm(`Pull the newest 4K master from ${cameraLabel} to Documents/CAMERA BACK UP INGEST?\\n\\nThis can take much longer than the proxy copy.`, { title: "Emergency 4K recovery", confirmLabel: "Start recovery", destructive: true })) {
           return;
         }
       } else if (action === "start") {
-        if (!confirm("Are you sure you want to START all camera recordings?")) {
+                if (!await studioConfirm("Are you sure you want to start all camera recordings?", { title: "Start all cameras", confirmLabel: "Start recordings" })) {
           return;
         }
       }
@@ -1072,7 +1187,7 @@ DASHBOARD_HTML = """<!doctype html>
 
     async function archiveRodecaster() {
       if (!rodecasterArchiveReady) return;
-      if (!confirm("Archive all available RØDECaster takes now? V4 post-record checks must be complete and OBS must stay closed. The source recordings remain on the RØDECaster.")) {
+            if (!await studioConfirm("Archive all available RØDECaster takes now? V4 post-record checks must be complete and OBS must stay closed. The source recordings remain on the RØDECaster.", { title: "Archive RØDECaster", confirmLabel: "Start archive" })) {
         return;
       }
       actionRunning = true;
@@ -1208,7 +1323,7 @@ DASHBOARD_HTML = """<!doctype html>
         const freshness = report.stale ? "HELD" : "LIVE";
         return `<div class="row"><div><strong>${cameraId}</strong><br><span class="pill ${report.stale ? "busy" : "ok"}">${freshness}</span></div><div class="muted">${slotText}</div><div><span class="pill ${report.recording ? "busy" : "ok"}">${report.recording ? "REC" : "READY"}</span></div></div>`;
       }).join("");
-      $("cardStatus").innerHTML = cardRows || `<div class="muted" style="padding:8px 0;">Press Refresh card status. Status pauses while recording or copying so the probe cannot interrupt the camera.</div>`;
+    $("cardStatus").innerHTML = cardRows || `<div class="muted" style="padding:8px 0;">Press CHECK CARDS / FORMAT to show capacity and available format controls for each camera. Status pauses while recording or copying so the probe cannot interrupt the camera.</div>`;
 
       // Render cleanup manifests
       const manifests = Array.isArray(data.cleanupManifests) ? data.cleanupManifests : [];
@@ -1288,7 +1403,7 @@ DASHBOARD_HTML = """<!doctype html>
       const remoteControlEnable = $("remoteControlEnable");
       const controlsLocked = isRemote && (!remoteControlEnable || !remoteControlEnable.checked);
       if (controlsLocked) {
-        alert("Controls are locked for remote connections.");
+                await studioAlert("Controls are locked for remote connections.", "Controls locked");
         return;
       }
 
@@ -1387,27 +1502,42 @@ DASHBOARD_HTML = """<!doctype html>
       const isRemote = lastVisitorType === "Remote (Tailscale)";
       const remoteControlEnable = $("remoteControlEnable");
       if (isRemote && (!remoteControlEnable || !remoteControlEnable.checked)) {
-        alert("Controls are locked for remote connections.");
+                await studioAlert("Controls are locked for remote connections.", "Controls locked");
         return;
       }
-      const acknowledgment = prompt(`LAST RESORT: this permanently erases every file on ${cameraId} Slot ${slot}.\\n\\nType FORMAT SLOT ${slot} exactly:`);
+            const acknowledgment = await studioPrompt(`LAST RESORT: this permanently erases every file on ${cameraId} Slot ${slot}.\\n\\nType FORMAT SLOT ${slot} exactly:`, `FORMAT SLOT ${slot}`);
       if (acknowledgment !== `FORMAT SLOT ${slot}`) return;
-      const highResAcknowledgment = prompt("This system verifies proxy copies only. Confirm the higher-resolution footage is either safely copied or you accept that it will be unrecoverable.\\n\\nType I HAVE MANUALLY VERIFIED THE HIGH-RES FOOTAGE exactly:");
+            const highResAcknowledgment = await studioPrompt("This system verifies proxy copies only. Confirm the higher-resolution footage is either safely copied or you accept that it will be unrecoverable.\\n\\nType I HAVE MANUALLY VERIFIED THE HIGH-RES FOOTAGE exactly:", "I HAVE MANUALLY VERIFIED THE HIGH-RES FOOTAGE");
       if (highResAcknowledgment !== "I HAVE MANUALLY VERIFIED THE HIGH-RES FOOTAGE") return;
       actionRunning = true;
       refreshDisabledStates();
       try {
-        const response = await fetch("/record/format-card", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cameraId, slot, acknowledgment, highResAcknowledgment }),
-        });
-        const result = await response.json();
+                const requestBody = { cameraId, slot, acknowledgment, highResAcknowledgment };
+                const sendFormatRequest = () => fetch("/record/format-card", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(requestBody),
+                    });
+                let response = await sendFormatRequest();
+                let result = await response.json();
+                if (response.status === 409 && result.requiresBackupOverride) {
+                    const overridePhrase = `ERASE ${cameraId.toUpperCase()} SLOT ${slot} WITHOUT VERIFIED BACKUP`;
+                    const backupOverrideAcknowledgment = await studioPrompt(
+                        `${result.error}\n\nLAST CHANCE: type ${overridePhrase} exactly to format anyway:`,
+                        overridePhrase,
+                    );
+                    if (backupOverrideAcknowledgment !== overridePhrase) return;
+                    requestBody.backupOverrideAcknowledgment = backupOverrideAcknowledgment;
+                    response = await sendFormatRequest();
+                    result = await response.json();
+                }
         if (!response.ok || !result.ok) throw new Error(result.error || result.stderr || "Camera rejected format");
-        alert(`Slot ${slot} format command completed.`);
+        await studioAlert(`Slot ${slot} format command completed.`, "Card format complete");
         await refreshCardStatus();
       } catch (error) {
-        setError(`Card format failed: ${error.message}`);
+                const message = `Card format failed: ${error.message}`;
+                setError(message);
+                await studioAlert(message, "Card format blocked");
       } finally {
         actionRunning = false;
         refreshDisabledStates();
@@ -1762,18 +1892,137 @@ def v4_completion_email_items(status):
     ]
 
 
+def v4_error_email_alert(status):
+    """Return one stable alert for an actionable Just In video/audio fault."""
+    problems = []
+    category = None
+    job_id = None
+
+    if status.get("apiReachable") is False:
+        category = "just-in-unreachable"
+        problems.append(status.get("error") or "Just In API is unreachable")
+
+    missing_channels = status.get("missingRequestedChannels") or []
+    if missing_channels:
+        category = category or "just-in-channel-error"
+        problems.append(f"Missing channels: {', '.join(str(item) for item in missing_channels)}")
+
+    for channel in status.get("channels") or []:
+        if channel.get("error"):
+            category = category or "just-in-channel-error"
+            problems.append(f"{channel.get('name') or 'Just In channel'}: {channel['error']}")
+
+    failed_stop = status.get("failedStopRecovery") or {}
+    if failed_stop.get("state") in {"attention", "failed", "stop_unknown"}:
+        category = category or "just-in-stop-error"
+        channel_errors = failed_stop.get("channelErrors") or failed_stop.get("errors") or {}
+        if channel_errors:
+            problems.extend(f"{name}: {message}" for name, message in sorted(channel_errors.items()))
+        else:
+            problems.append(failed_stop.get("error") or "Just In did not confirm that every channel stopped")
+
+    post_record = status.get("postRecord") or {}
+    post_state = post_record.get("state")
+    if post_state in {"attention", "failed", "cancelled"}:
+        category = category or "just-in-media-error"
+        job_id = post_record.get("jobId")
+        problems.append(post_record.get("error") or "Just In master or proxy verification did not pass")
+
+    summary = status.get("postRecordSummary") or {}
+    if summary.get("state") == "attention" and not summary.get("allChecksPassed"):
+        category = category or "just-in-media-error"
+        job_id = job_id or summary.get("jobId")
+        problems.append(summary.get("detail") or "Just In video or audio checks need attention")
+
+    problems = list(dict.fromkeys(str(problem).strip() for problem in problems if str(problem).strip()))
+    if not problems:
+        return None
+
+    fingerprint_source = json.dumps(
+        {"category": category, "jobId": job_id, "problems": problems},
+        sort_keys=True,
+    ).encode("utf-8")
+    fingerprint = hashlib.sha256(fingerprint_source).hexdigest()
+    subject = "StudioOS alert: Just In video/audio error"
+    body = "StudioOS detected a Just In video or audio problem:\n\n" + "\n".join(
+        f"- {problem}" for problem in problems
+    )
+    if job_id:
+        body += f"\n\nPost-record job: {job_id}"
+    body += "\nDashboard: http://127.0.0.1:3030"
+    return {
+        "fingerprint": fingerprint,
+        "category": category,
+        "jobId": job_id,
+        "subject": subject,
+        "body": body,
+        "problems": problems,
+    }
+
+
+def send_v4_error_email(config, alert):
+    email_config = config.get("email") or {}
+    if not email_config.get("enabled", False):
+        return {"ok": True, "skipped": True, "reason": "Email is disabled"}
+    if email_config.get("provider", "smtp").lower() != "resend":
+        return {"ok": False, "error": "Just In error alerts require the Resend email provider"}
+    escaped_body = html.escape(alert["body"]).replace("\n", "<br>")
+    html_body = (
+        '<!doctype html><html><body style="font-family:Arial,sans-serif;color:#17202a;line-height:1.5">'
+        '<h2 style="color:#b42318">Just In video/audio error</h2>'
+        f'<p>{escaped_body}</p></body></html>'
+    )
+    return send_resend_message(
+        email_config,
+        alert["subject"],
+        alert["body"],
+        html_body,
+    )
+
+
+def write_v4_email_state(state):
+    V4_EMAIL_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = V4_EMAIL_STATE_PATH.with_suffix(".tmp")
+    temporary_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary_path, V4_EMAIL_STATE_PATH)
+
+
 def watch_v4_completion_email(config, poll_seconds=15):
     attempted_at = {}
     while True:
         try:
             with urlopen(Request(V4_STATUS_URL, method="GET"), timeout=5) as response:
                 status = json.loads(response.read().decode("utf-8"))
+            persisted = {}
+            if V4_EMAIL_STATE_PATH.exists():
+                persisted = json.loads(V4_EMAIL_STATE_PATH.read_text(encoding="utf-8"))
+
+            alert = v4_error_email_alert(status)
+            if alert:
+                fingerprint = alert["fingerprint"]
+                last_attempt = attempted_at.get(fingerprint, 0)
+                if persisted.get("lastAlertFingerprint") != fingerprint and time.time() - last_attempt >= 300:
+                    attempted_at[fingerprint] = time.time()
+                    email_result = send_v4_error_email(config, alert)
+                    with STATE_LOCK:
+                        STATE["last_email_result"] = email_result
+                        STATE["last_email_ok"] = bool(email_result.get("ok"))
+                    if email_result.get("ok") and not email_result.get("skipped"):
+                        persisted.update({
+                            "lastAlertFingerprint": fingerprint,
+                            "lastAlertCategory": alert["category"],
+                            "lastAlertJobId": alert.get("jobId"),
+                            "lastAlertSentAt": time.time(),
+                        })
+                        write_v4_email_state(persisted)
+            elif persisted.get("lastAlertFingerprint"):
+                for key in ("lastAlertFingerprint", "lastAlertCategory", "lastAlertJobId", "lastAlertSentAt"):
+                    persisted.pop(key, None)
+                write_v4_email_state(persisted)
+
             completion = v4_completion_email_items(status)
             if completion:
                 job_id, delivered = completion
-                persisted = {}
-                if V4_EMAIL_STATE_PATH.exists():
-                    persisted = json.loads(V4_EMAIL_STATE_PATH.read_text(encoding="utf-8"))
                 last_attempt = attempted_at.get(job_id, 0)
                 if persisted.get("lastEmailedJobId") != job_id and time.time() - last_attempt >= 300:
                     attempted_at[job_id] = time.time()
@@ -1782,39 +2031,32 @@ def watch_v4_completion_email(config, poll_seconds=15):
                         STATE["last_email_result"] = email_result
                         STATE["last_email_ok"] = bool(email_result.get("ok"))
                     if email_result.get("ok") and not email_result.get("skipped"):
-                        V4_EMAIL_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-                        temporary_path = V4_EMAIL_STATE_PATH.with_suffix(".tmp")
-                        temporary_path.write_text(
-                            json.dumps({"lastEmailedJobId": job_id, "sentAt": time.time()}, indent=2) + "\n",
-                            encoding="utf-8",
-                        )
-                        os.replace(temporary_path, V4_EMAIL_STATE_PATH)
+                        persisted.update({"lastEmailedJobId": job_id, "sentAt": time.time()})
+                        write_v4_email_state(persisted)
         except Exception as exc:
             print(f"V4 completion email watcher: {exc}", flush=True)
         time.sleep(poll_seconds)
 
 
-def send_resend_email(email_config, delivered):
+def resend_api_key(email_config):
+    api_key_name = email_config.get("apiKeyEnv", "FX30_RESEND_API_KEY")
+    api_key = os.environ.get(api_key_name)
+    if api_key:
+        return api_key
+    keychain_result = subprocess.run(
+        ["/usr/bin/security", "find-generic-password", "-s", api_key_name, "-w"],
+        capture_output=True,
+        text=True,
+    )
+    return keychain_result.stdout.strip() if keychain_result.returncode == 0 else None
+
+
+def send_resend_message(email_config, subject, body, html_body, files=None):
     sender = email_config.get("from")
     recipients = email_config.get("to") or []
     if isinstance(recipients, str):
         recipients = [recipients]
-    api_key_name = email_config.get("apiKeyEnv", "FX30_RESEND_API_KEY")
-    api_key = os.environ.get(api_key_name)
-    if not api_key:
-        keychain_result = subprocess.run(
-            [
-                "/usr/bin/security",
-                "find-generic-password",
-                "-s",
-                api_key_name,
-                "-w",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if keychain_result.returncode == 0:
-            api_key = keychain_result.stdout.strip()
+    api_key = resend_api_key(email_config)
 
     missing = [
         name
@@ -1828,7 +2070,6 @@ def send_resend_email(email_config, delivered):
     if missing:
         return {"ok": False, "error": f"Missing Resend email settings: {', '.join(missing)}"}
 
-    subject, body, html_body, file_names = email_subject_and_body(email_config, delivered)
     data = json.dumps({
         "from": sender,
         "to": recipients,
@@ -1853,7 +2094,7 @@ def send_resend_email(email_config, delivered):
             "ok": True,
             "provider": "resend",
             "to": recipients,
-            "files": file_names,
+            "files": files or "",
             "response": response_body,
         }
     except HTTPError as exc:
@@ -1865,6 +2106,11 @@ def send_resend_email(email_config, delivered):
         }
     except Exception as exc:
         return {"ok": False, "provider": "resend", "error": str(exc)}
+
+
+def send_resend_email(email_config, delivered):
+    subject, body, html_body, file_names = email_subject_and_body(email_config, delivered)
+    return send_resend_message(email_config, subject, body, html_body, file_names)
 
 
 def send_smtp_email(email_config, delivered):
@@ -2140,7 +2386,8 @@ class WarmCameraController:
             os.close(child_fd)
             self.started_at = time.time()
             self.identity_error = None
-            Thread(target=self._read_stdout, daemon=True).start()
+            reader_fd = os.dup(self.terminal_fd)
+            Thread(target=self._read_stdout, args=(reader_fd,), daemon=True).start()
             ready_line = self._wait_for_prefix("SONY_REC_READY ", timeout_seconds)
             ready = ready_line is not None
             if ready:
@@ -2268,11 +2515,13 @@ class WarmCameraController:
         result = [executable, "--camera", self.camera["id"], "--server"]
         if self.camera.get("mac"):
             result += ["--mac", self.camera["mac"]]
+        if self.camera.get("ip"):
+            result += ["--ip", self.camera["ip"]]
         return result
 
-    def _read_stdout(self):
+    def _read_stdout(self, terminal_fd):
         try:
-            with os.fdopen(self.terminal_fd, "r", buffering=1, errors="replace") as stream:
+            with os.fdopen(terminal_fd, "r", buffering=1, errors="replace") as stream:
                 for line in stream:
                     self.lines.put(line.rstrip("\r\n"))
         except Exception as exc:
@@ -2525,7 +2774,7 @@ def run_camera_command(camera, action, timeout_seconds=4):
     return result
 
 
-def refresh_camera_card_status(config, camera_id):
+def refresh_camera_card_status(config, camera_id, restart_warm=True):
     """Read remaining record time without allowing a probe to interrupt work."""
     camera = next((item for item in enabled_cameras(config) if item["id"] == camera_id), None)
     if not camera:
@@ -2551,7 +2800,7 @@ def refresh_camera_card_status(config, camera_id):
     if not result.get("ok"):
         status["ok"] = False
         status["error"] = result.get("error") or result.get("warning") or status.get("error") or "Camera status request failed"
-    if was_warm:
+    if was_warm and restart_warm:
         Thread(
             target=warm_controller_for(camera).start,
             args=(config.get("commandTimeoutSeconds", 90),),
@@ -2579,6 +2828,20 @@ def camera_card_backup_verified(config, camera_id):
     if unsafe:
         return False, f"{len(unsafe)} tracked backup(s) are not verified in both SSD and LucidLink."
     return True, None
+
+
+def camera_card_format_backup_authorized(config, camera_id, slot, body):
+    verified, reason = camera_card_backup_verified(config, camera_id)
+    if verified:
+        return True, None
+    expected = f"ERASE {camera_id.upper()} SLOT {slot} WITHOUT VERIFIED BACKUP"
+    if body.get("backupOverrideAcknowledgment") == expected:
+        return True, None
+    return False, {
+        "ok": False,
+        "error": reason,
+        "requiresBackupOverride": True,
+    }
 
 
 def format_camera_card(config, camera_id, slot):
@@ -3918,11 +4181,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if STATE["recording"] or STATE["ingest_running"] or STATE["record_action_running"]:
                 json_response(self, 409, {"ok": False, "error": "Format is unavailable while recording, copying, or changing camera state."})
                 return
-        verified, reason = camera_card_backup_verified(self.config, camera_id)
-        if not verified:
-            json_response(self, 409, {"ok": False, "error": reason})
+        authorized, failure = camera_card_format_backup_authorized(self.config, camera_id, slot, body)
+        if not authorized:
+            json_response(self, 409, failure)
             return
-        report = refresh_camera_card_status(self.config, camera_id)
+        report = refresh_camera_card_status(self.config, camera_id, restart_warm=False)
         slot_report = next((item for item in report.get("slots", []) if item.get("slot") == slot), None)
         if not report.get("ok") or not slot_report or not slot_report.get("fullFormatAvailable"):
             json_response(self, 409, {"ok": False, "error": "Sony SDK has not confirmed that full format is available for this slot."})
@@ -3930,6 +4193,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         controller = existing_warm_controller(camera_id)
         if controller and controller.proc and controller.proc.poll() is None:
             controller.stop()
+        time.sleep(self.config.get("modeSwitchDelaySeconds", 0.5))
         result = format_camera_card(self.config, camera_id, slot)
         with STATE_LOCK:
             STATE.setdefault("card_status", {}).pop(camera_id, None)
